@@ -1,26 +1,40 @@
-# To create locally
+# Git — Branch Management Cheat Sheet
 
-```git checkout -b name_of_branch```
+## Create a new local branch
+```bash
+git checkout -b <branch_name>
+```
 
-# To synchronise with the distant branch (remote)
+## Push the branch to the remote (and set upstream)
+```bash
+git push -u origin <branch_name>
+```
 
-```git push -u origin name_of_branch```
+## List remote branches
+```bash
+git branch -r
+```
 
-# To see the distant branches
+## List local branches
+```bash
+git branch
+```
 
-```git branch -r```
+## Delete a branch
+- **Local**  
+  ```bash
+  git branch -d <branch_name>
+  ```
+- **Remote**  
+  ```bash
+  git push origin --delete <branch_name>
+  ```
 
-# To see the local branches
+## Reset a branch and discard all local changes  
+*(Force sync with the remote version — irreversible)*
 
-```git branch```
-
-# To delete a branch
-
-- Local : ```git branch -d {mybranch}```
-- Distant : ```git push origin --delete {mybranch}```
-
-# To pull the branch without taking into account the actual modifications (ERASE ALL THE LOCAL MODIFICATIONS)
-
-- ```git checkout {mybranch}```
-- ```git fetch origin```
-- ```git reset --hard origin/{aimedbranch}```
+```bash
+git checkout <branch_name>
+git fetch origin
+git reset --hard origin/<target_branch>
+```
