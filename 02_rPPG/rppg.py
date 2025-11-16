@@ -1,69 +1,17 @@
 import numpy as np
 from scipy.signal import detrend, butter, filtfilt, find_peaks
 from vision_detection.face_detection import FaceMeshDetector
-
-class ROISet:
-    """
-    Lightweight read-only mapping describing one or multiple ROIs.
-    Supports the + operator for easy combinations, e.g. RPPG.CHEEKS + RPPG.FOREHEAD.
-    """
-    def __init__(self, mapping):
-        """
-        Initialize the ROISet with a mapping of ROI names to landmark indices.
-        """
-        self._mapping = {name: tuple(indices) for name, indices in mapping.items()}
-
-    def items(self):
-        """
-        Return an iterable view of the ROISet's items (name, indices).
-        """
-        return self._mapping.items()
-
-    def __iter__(self):
-        """
-        Return an iterator over the ROISet's keys (ROI names).
-        """
-        return iter(self._mapping)
-
-    def __len__(self):
-        """
-        Return the number of ROIs in the ROISet.
-        """
-        return len(self._mapping)
-
-    def __add__(self, other):
-        """
-        Combine two ROISet instances or an ROISet with a dict-like object.
-        """
-        other_mapping = other._mapping if isinstance(other, ROISet) else {
-            name: tuple(indices) for name, indices in dict(other).items()
-        }
-        combined = dict(self._mapping)
-        combined.update(other_mapping)
-        return ROISet(combined)
-
-    def to_dict(self):
-        """
-        Convert the ROISet to a standard dictionary.
-        """
-        return dict(self._mapping)
-
-
-# Create a list of macros to set the landmark indices for ROI extraction compute_bbox
-RIGHT_CHEEK = [234, 93, 132, 58, 172, 136, 150, 149, 176, 148]
-LEFT_CHEEK = [454, 323, 361, 288, 397, 365, 379, 378, 400, 377]
-FOREHEAD = [10, 338, 297, 332, 284, 251, 389, 356]
-
+from roisets import ROISet
 
 class RPPG:
     # Define preset ROI sets for easy use----------
     CHEEKS = ROISet(
         {
-            "left_cheek": LEFT_CHEEK,
-            "right_cheek": RIGHT_CHEEK,
+            "left_cheek": ROISet.LEFT_CHEEK,
+            "right_cheek": ROISet.RIGHT_CHEEK,
         }
     )
-    FOREHEAD = ROISet({"forehead": FOREHEAD})
+    FOREHEAD = ROISet({"forehead": ROISet.FOREHEAD})
     #-----------------------------------------------
 
     def __init__(
@@ -136,11 +84,17 @@ class RPPG:
             return
         #----------------------------------------------------------------------
         # 1) extract ROI(s) using landmarks
+        # We extract the height and width of the frame to make sure we don't go out of bounds
         frame_h, frame_w = frame_bgr.shape[:2]
+        # Initialize list to store mean green values from each ROI
         mean_values = []
+        # We loop over each defined ROI set to extract and compute mean green channel
         for name, roi_indices in self.roi_landmark_sets.items():
+            # This gonna extract the ROI using the landmark indices
             roi_points = [landmarks[i] for i in roi_indices]
+            # Using compute_bbox to get the bounding box of the ROI
             x1, y1, x2, y2 = FaceMeshDetector.compute_bbox(roi_points)
+            # Ensure the bounding box is within frame bounds-------------------
             x1 = max(0, min(frame_w - 1, x1))
             x2 = max(x1 + 1, min(frame_w, x2))
             y1 = max(0, min(frame_h - 1, y1))
@@ -148,9 +102,13 @@ class RPPG:
             roi = frame_bgr[y1:y2, x1:x2]
             if roi.size == 0:
                 continue
+            #------------------------------------------------------------------
+            # Store the last extracted ROIs for debug visualisation for each defined ROI
             self.last_rois[name] = roi
+            # Compute mean of green channel in the ROI and store it
             mean_values.append(roi[:, :, 1].mean(dtype=np.float32))
 
+        # Check if we have any mean values computed
         if not mean_values:
             return
         #----------------------------------------------------------------------
@@ -162,7 +120,7 @@ class RPPG:
         if len(self.signal_buffer) > self.buffer_size:
             self.signal_buffer.pop(0)
 
-
+    # TODO: implement the actual signal processing steps
     def compute_liveness(self):
         """
         Use self.signal_buffer to:
