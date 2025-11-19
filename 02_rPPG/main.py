@@ -25,8 +25,6 @@ def main():
         if frame is None:
             print("Warning: empty frame from camera, stopping.")
             break
-        #We want to get coords for every frame (for every frame we build a mash)
-        coords = detector.process(frame)
 
         #------------------------------------------------------------
         # rPPG processing
