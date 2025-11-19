@@ -3,12 +3,12 @@ import numpy as np
 from collections import deque
 import os                       
 
-from 01_Vision_Detection.video_capture import init_camera, get_frame, release_camera, ensure_data_dir
-from 01_Vision_Detection.face_detection import FaceMeshDetector
-from 01_Vision_Detection.face_alignment import align_and_crop, compute_eye_centers
-from 01_Vision_Detection.utils import FPSMeter, EyeSmoother
+from Vision_Detection.video_capture import init_camera, get_frame, release_camera, ensure_data_dir
+from Vision_Detection.face_detection import FaceMeshDetector
+from Vision_Detection.face_alignment import align_and_crop, compute_eye_centers
+from Vision_Detection.utils import FPSMeter, EyeSmoother
 
-from 01_Vision_Detection.face_capture import save_latest_aligned_face
+from Vision_Detection.face_capture import save_latest_aligned_face
 
 
 #Just for aesthetics we are going to draw a box around face
