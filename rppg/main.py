@@ -1,15 +1,15 @@
 import cv2
-from main import put_fps
+from vision_detection.main import put_fps
 from vision_detection.face_detection import FaceMeshDetector
 from vision_detection.utils import FPSMeter
-import rppg as rppg_module
+from rppg.rppg_class import RPPG
 from vision_detection.video_capture import get_frame, init_camera, release_camera
 
 def main():
-    debug = True  # Set to True to enable debug visualisations
+    debug = True                                                            # Set to True to enable debug visualisations
     cap = init_camera(index=0, width=640, height=480)
     detector = FaceMeshDetector(max_num_faces=1, refine_landmarks=True)
-    rppg = rppg_module.RPPG(fps=30)                                                 # Initialize rPPG with desired FPS, TODO make fps dynamic according to actual camera fps
+    rppg = RPPG(fps=30, roi_landmark_sets=RPPG.CHEEKS.LEFT_CHEEK)                                                     # Initialize rPPG with desired FPS, TODO make fps dynamic according to actual camera fps
     fps = FPSMeter()
     frame_id = 0
 
@@ -32,7 +32,7 @@ def main():
         coords = detector.process(frame)
 
         if coords is not None and len(coords) > 0:
-            rppg.update_buffer(frame, coords)
+            rppg.update_buffer(frame)
 
         # Debug / visualisation: show the last extracted ROIs 1 frame every 5 frames
         if debug:

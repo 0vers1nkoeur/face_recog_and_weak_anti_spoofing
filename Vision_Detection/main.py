@@ -3,12 +3,12 @@ import numpy as np
 from collections import deque
 import os                       
 
-from Vision_Detection.video_capture import init_camera, get_frame, release_camera, ensure_data_dir
-from Vision_Detection.face_detection import FaceMeshDetector
-from Vision_Detection.face_alignment import align_and_crop, compute_eye_centers
-from Vision_Detection.utils import FPSMeter, EyeSmoother
+from vision_detection.video_capture import init_camera, get_frame, release_camera, ensure_data_dir
+from vision_detection.face_detection import FaceMeshDetector
+from vision_detection.face_alignment import align_and_crop, compute_eye_centers
+from vision_detection.utils import FPSMeter, EyeSmoother
 
-from Vision_Detection.face_capture import save_latest_aligned_face
+from vision_detection.face_capture import save_latest_aligned_face
 
 
 #Just for aesthetics we are going to draw a box around face
@@ -35,6 +35,7 @@ def main():
     smoother = EyeSmoother(window=5)
 
     frame_counter = 0   #Counter for aligned face saving
+    saving_aligned_faces = True
 
     #THIS BUFFER IS FOR MY FRIEND LORENZZO!------------------------------------------------------------------------------------------------------------------------------------------------
     #Anti-spoofing requires 15-30 seconds of video
@@ -87,23 +88,25 @@ def main():
             smoother.update(left_xy, right_xy)
             sm_left_xy, sm_right_xy = smoother.get_smoothed()
 
-            #Saveing aligned face temporarily
-            aligned_path = f"{preview_dir}/frame_{frame_counter:06d}.jpg"
+            if saving_aligned_faces:
+                if (frame_counter == 0):
+                    print("Started saving aligned faces to disk.")
+                    
+                aligned_path = f"{preview_dir}/frame_{frame_counter:06d}.jpg"
 
-            cropped = align_and_crop(
-                frame_bgr=frame,
-                coords=coords,
-                crop_size=224,
-                save_debug_path=aligned_path,
-            )
+                _ = align_and_crop(
+                    frame_bgr=frame,
+                    coords=coords,
+                    crop_size=224,
+                    save_debug_path=aligned_path,
+                )
 
-            frame_counter += 1
+                frame_counter += 1
 
-            #Remove old images if more than MAX_JPEG_IMAGES exist
-            files = sorted(os.listdir(preview_dir))
-            if len(files) > MAX_JPEG_IMAGES:
-                oldest = files[0]
-                os.remove(os.path.join(preview_dir, oldest))
+                files = sorted(os.listdir(preview_dir))
+                if len(files) > MAX_JPEG_IMAGES:
+                    oldest = files[0]
+                    os.remove(os.path.join(preview_dir, oldest))
 
             #This is again just for aesthetics (it will just show how system converst eyes to smoother eyes)
             for (ex, ey) in (sm_left_xy, sm_right_xy):
@@ -118,6 +121,10 @@ def main():
         key = cv2.waitKey(1) & 0xFF
         if key == 27:  #27 is ESC in ASCII 
             break
+
+        if key == ord(' '):
+            print(f"{'Stopping' if saving_aligned_faces else 'Starting'} aligned face saving.")
+            saving_aligned_faces = not saving_aligned_faces
 
         if key == ord('s') or key == ord('S'):  
             save_latest_aligned_face()          #THIS FUNCTION IS FOR MY FRIEND KONSTANTINOS!---------------------------------------------------------------------------------------------------------------------
