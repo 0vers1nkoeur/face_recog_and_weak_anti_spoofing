@@ -35,3 +35,13 @@ git checkout main
 git merge <mybranch>
 git push origin main
 ```
+
+---
+
+# How to rename a folder if it's not taken into account in Github ? (in case switch from upper to lower or vice-versa)
+```bash
+git mv CURRENT_FOLDER_NAME tmp_rename
+git mv tmp_rename NEW_FOLDER_NAME
+git commit -m "Rename CURRENT_FOLDER_NAME to vision_detection"
+git push
+```

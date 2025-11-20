@@ -29,9 +29,9 @@ class RPPG:
         self.fps = fps
         self.window_seconds = window_seconds
         self.buffer_size = int(fps * window_seconds)
-        self.low_hz = low_hz
-        self.high_hz = high_hz
-        self.snr_thresh_db = snr_thresh_db
+        self.low_hz = low_hz                                # Lower frequency bound for bandpass filter (Hz)
+        self.high_hz = high_hz                              # Upper frequency bound for bandpass filter (Hz)
+        self.snr_thresh_db = snr_thresh_db                  # SNR threshold in dB for liveness decision
 
         # If no ROISet is chosen, use the default CHEEKS set
         if roi_landmark_sets is None:
@@ -115,7 +115,6 @@ class RPPG:
         if len(self.signal_buffer) > self.buffer_size:
             self.signal_buffer.pop(0)
 
-    # TODO: implement the actual signal processing steps
     def compute_liveness(self):
         """
         Use self.signal_buffer to:
@@ -123,5 +122,49 @@ class RPPG:
         - compute BPM + SNR,
         - decide if is_live or not.
         """
-        ...
-        return bpm, snr_db, is_live # pyright: ignore[reportUndefinedVariable]
+        # Convert signal buffer to numpy array for processing
+        signal = np.array(self.signal_buffer, dtype=np.float32)     # float32 used to save memory
+        if len(signal) < self.buffer_size:                          # Ensure we have enough data in the buffer
+            print("Warning: Not enough data in signal buffer to compute liveness.")
+            return None, None, False
+        # Detrend the signal to remove linear trends : 
+        # remove slow variations in the signal that are not related to the heart rate. 
+        # Ex of slow variations : gradual changes in lighting or movement artifacts.
+        # In other words, it cleans the signal to focus on the relevant frequency components.
+        signal = detrend(signal)
+        # Bandpass filter design, we use Butterworth filter to isolate the heart rate frequency band------------------------
+        nyquist = 0.5 * self.fps                                    # Nyquist frequency is half the sampling rate (fps)
+        low = self.low_hz / nyquist                                 # Normalized low cutoff frequency             
+        high = self.high_hz / nyquist                               # Normalized high cutoff frequency
+        # 3rd order Butterworth bandpass filter
+        # The filter is deterministic, meaning it will produce the same output for the same input every time.
+        # Here, we only put into parameters the parameters of the filter
+        # 3 is the order of the filter, [low, high] are the cutoff frequencies and btype is bandpass
+        # How it works ? We use the known Butterworth filter design to compute the filter coefficients b and a (bandpass transformation, bilinear transform, coefficients calculation).
+        b,a = butter(3, [low, high], btype='bandpass')              # type: ignore
+        #------------------------------------------------------------------------------------------------------------------
+        # Apply the bandpass filter, that will allow only frequencies within the heart rate range to pass through
+        filtered_signal = filtfilt(b, a, signal)
+        #------------------------------------------------------------------------------------------------------------------
+        # Compute the FFT of the filtered signal, to analyze its frequency components
+        fft = np.fft.rfft(filtered_signal)
+        fft_freqs = np.fft.rfftfreq(len(filtered_signal), d=1/self.fps)
+        fft_magnitude = np.abs(fft)
+        # Find the peak frequency in the heart rate range
+        hr_range = (self.low_hz, self.high_hz)
+        hr_indices = np.where((fft_freqs >= hr_range[0]) & (fft_freqs <= hr_range[1]))[0]
+        if len(hr_indices) == 0:
+            print("Warning: No frequency components found in heart rate range.")
+            return None, None, False
+        peak_idx = hr_indices[np.argmax(fft_magnitude[hr_indices])]
+        peak_freq = fft_freqs[peak_idx]
+        # Compute BPM (beats per minute) from the peak frequency
+        bpm = peak_freq * 60.0
+        # Compute SNR in dB
+        signal_power = fft_magnitude[peak_idx] ** 2
+        noise_power = np.sum(fft_magnitude[hr_indices] ** 2) - signal_power
+        snr = signal_power / noise_power if noise_power > 0 else float('inf')
+        snr_db = 10 * np.log10(snr)
+        # Determine liveness based on SNR threshold
+        is_live = snr_db >= self.snr_thresh_db
+        return bpm, snr_db, is_live
