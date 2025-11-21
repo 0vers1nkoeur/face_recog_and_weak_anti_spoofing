@@ -51,6 +51,7 @@ def main():
     MAX_JPEG_IMAGES = 15  #We are limiting images saved on disk to 15 (once we get to 15 we are deleting older buffer)
     preview_dir = "data/aligned_preview"
 
+
     #We need to write something if we can't open camera
     if not cap.isOpened():
         print("Error: could not open camera.")
