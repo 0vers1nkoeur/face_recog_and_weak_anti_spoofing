@@ -28,12 +28,12 @@ def main():
 
         #------------------------------------------------------------------
 
-        # ESC stops EVERYTHING immediately
+        #ESC stops EVERYTHING immediately
         if cv2.waitKey(1) == 27:
             vt.stop()       # stop Thread
             break           # EXIT MAIN LOOP IMMEDIATELY
 
-        # If thread died for any reason
+        #If thread died for any reason
         if not vt.running:
             break
 
