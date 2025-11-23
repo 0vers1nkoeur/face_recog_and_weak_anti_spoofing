@@ -12,13 +12,14 @@ from vision_detection.utils import FPSMeter, EyeSmoother
 #Also it needs to work in backgorund so that we don't need to exit camera to get buffer out
 class VisionThread(threading.Thread):   #By adding threading.Thread that means this class will work in backgorund thread
 
-    def __init__(self, buffer_seconds=15, fps_estimate=30, camera_index=0):
+    def __init__(self, buffer_seconds=15, fps_estimate=30, camera_index=0, debug=False):
         super().__init__()  #We are calling constructor of parent class (threading)
 
         #We need to determin buffer size
         #We need to set which camer we are using
         self.buffer_size = buffer_seconds * fps_estimate
         self.camera_index = camera_index
+        self.debug = debug
 
         #Main things other modules will read in real-time
         self.frame_buffer = deque(maxlen=self.buffer_size)   #Big video frame buffer (450 frames)
@@ -102,12 +103,17 @@ class VisionThread(threading.Thread):   #By adding threading.Thread that means t
             fps_value = int(self.fps_meter.tick())
             cv2.putText(frame, f"FPS: {fps_value}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0,255,0), 2)
 
-            #GUI show
-            cv2.imshow("Vision & Detection", frame)
-
-            #ESC key -> stop immediately
-            if cv2.waitKey(1) == 27:
-                self.stop()
+            #GUI show & keyboard handling (guarded for headless environments)
+            if self.debug:
+                try:
+                    cv2.imshow("Vision & Detection", frame)
+                    if cv2.waitKey(1) == 27:
+                        self.stop()
+                except cv2.error as exc:
+                    # When running headless OpenCV may lack GUI support; disable debug windows gracefully.
+                    print(f"Warning: OpenCV GUI unavailable ({exc}), disabling debug view.")
+                    self.debug = False
+                    cv2.destroyAllWindows()
 
         #Clean up
         print("Stopping camera GUI")

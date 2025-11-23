@@ -57,7 +57,7 @@ class RPPG:
         # Initialize the rolling signal buffer, this will store the mean green channel values over time
         self.signal_buffer = []
     
-    def update_buffer(self, frame_rgb):
+    def update_buffer(self, frame_rgb, landmarks):
         """
         Extracts an ROI from landmarks, computes the mean green channel 
         and appends it to the rolling rPPG buffer.
@@ -66,14 +66,19 @@ class RPPG:
         ----------
         frame_rgb : np.ndarray
             Current video frame in RGB format (cropped and aligned).
+        landmarks : Sequence[Tuple[int, int]]
+            Facial landmarks detected on the current frame.
         Returns
         -------
         None
             Updates the internal signal buffer in-place.
         """
         # Sanity checks
-        if frame_rgb is None or self.roi_landmark_sets is None or len(self.roi_landmark_sets) == 0:       # This checks if we have frame and landmarkss
-            print("Error: Missing frame or ROI landmark sets.")
+        if frame_rgb is None or landmarks is None or len(landmarks) == 0:
+            print("Error: Missing frame or landmarks.")
+            return
+        if self.roi_landmark_sets is None or len(self.roi_landmark_sets) == 0:       # This checks if we have frame and landmarkss
+            print("Error: Missing ROI landmark sets.")
             return
         #----------------------------------------------------------------------
         # 1) extract ROI(s) using landmarks of the class
@@ -83,7 +88,11 @@ class RPPG:
         mean_values = []
         # We loop over each defined ROI set to extract and compute mean green channel
         for name, roi_indices in self.roi_landmark_sets.items():                    # roi_landmark_sets is a dict where key is name of roi and value is list of landmark indices. Ex : {"left_cheek": [50, 101, 102, 103], "right_cheek": [...]}
-            roi_points = [self.roi_landmark_sets[i] for i in roi_indices]           # This gonna extract the ROI using the landmark indices. Ex : if roi_indices = [50, 101, 102, 103], then we take the points corresponding to these indices
+            try:
+                roi_points = [landmarks[i] for i in roi_indices]
+            except IndexError:
+                print(f"Warning: ROI {name} references invalid landmark indices, skipping.")
+                continue
             # Using compute_bbox to get the bounding box of the ROI
             x1, y1, x2, y2 = FaceMeshDetector.compute_bbox(roi_points)              # We use FaceMeshDetector's static method to compute bbox
             # Ensure the bounding box is within frame bounds---------------------
@@ -115,6 +124,7 @@ class RPPG:
         if len(self.signal_buffer) > self.buffer_size:
             self.signal_buffer.pop(0)
 
+    # TODO Check the correctness of the code 
     def compute_liveness(self):
         """
         Use self.signal_buffer to:
@@ -130,7 +140,6 @@ class RPPG:
         # Detrend the signal to remove linear trends : 
         # remove slow variations in the signal that are not related to the heart rate. 
         # Ex of slow variations : gradual changes in lighting or movement artifacts.
-        # In other words, it cleans the signal to focus on the relevant frequency components.
         signal = detrend(signal)
         # Bandpass filter design, we use Butterworth filter to isolate the heart rate frequency band------------------------
         nyquist = 0.5 * self.fps                                    # Nyquist frequency is half the sampling rate (fps)
@@ -140,13 +149,12 @@ class RPPG:
         # The filter is deterministic, meaning it will produce the same output for the same input every time.
         # Here, we only put into parameters the parameters of the filter
         # 3 is the order of the filter, [low, high] are the cutoff frequencies and btype is bandpass
-        # How it works ? We use the known Butterworth filter design to compute the filter coefficients b and a (bandpass transformation, bilinear transform, coefficients calculation).
+        # How it works ? We use the known Butterworth
         b,a = butter(3, [low, high], btype='bandpass')              # type: ignore
         #------------------------------------------------------------------------------------------------------------------
-        # Apply the bandpass filter, that will allow only frequencies within the heart rate range to pass through
+        # Apply the bandpass filter
         filtered_signal = filtfilt(b, a, signal)
-        #------------------------------------------------------------------------------------------------------------------
-        # Compute the FFT of the filtered signal, to analyze its frequency components
+        # Compute the FFT of the filtered signal
         fft = np.fft.rfft(filtered_signal)
         fft_freqs = np.fft.rfftfreq(len(filtered_signal), d=1/self.fps)
         fft_magnitude = np.abs(fft)
@@ -158,9 +166,8 @@ class RPPG:
             return None, None, False
         peak_idx = hr_indices[np.argmax(fft_magnitude[hr_indices])]
         peak_freq = fft_freqs[peak_idx]
-        # Compute BPM (beats per minute) from the peak frequency
         bpm = peak_freq * 60.0
-        # Compute SNR in dB
+        # Compute SNR
         signal_power = fft_magnitude[peak_idx] ** 2
         noise_power = np.sum(fft_magnitude[hr_indices] ** 2) - signal_power
         snr = signal_power / noise_power if noise_power > 0 else float('inf')

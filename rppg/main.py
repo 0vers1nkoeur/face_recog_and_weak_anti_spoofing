@@ -1,42 +1,75 @@
+import time
+import threading
 import cv2
-from vision_detection.main import put_fps
-from vision_detection.face_detection import FaceMeshDetector
-from vision_detection.utils import FPSMeter
+from rppg.roisets_class import ROISet
 from rppg.rppg_class import RPPG
-from vision_detection.video_capture import get_frame, init_camera, release_camera
+from vision_detection.vision_thread import VisionThread
+
+
+def _check_correctness() -> None:
+    """Fail fast if the main dependencies do not expose the expected API."""
+    issues = []
+    if not issubclass(VisionThread, threading.Thread):
+        issues.append("VisionThread must inherit from threading.Thread.")
+
+    for method_name in ("start", "stop", "join"):
+        method = getattr(VisionThread, method_name, None)
+        if not callable(method):
+            issues.append(f"VisionThread.{method_name}() must be callable.")
+
+    for method_name in ("update_buffer", "compute_liveness"):
+        method = getattr(RPPG, method_name, None)
+        if not callable(method):
+            issues.append(f"RPPG.{method_name}() must be callable.")
+
+    roi_set = getattr(RPPG, "CHEEKS", None)
+    if roi_set is None:
+        issues.append("RPPG must expose the CHEEKS ROI set.")
+    elif not isinstance(roi_set, ROISet):
+        issues.append("RPPG.CHEEKS must be defined as an ROISet.")
+
+    if issues:
+        problems = "\n - ".join(issues)
+        raise RuntimeError(f"rPPG pipeline misconfigured:\n - {problems}")
+
+
+_check_correctness()
 
 def main():
     debug = True                                                            # Set to True to enable debug visualisations
-    cap = init_camera(index=0, width=640, height=480)
-    detector = FaceMeshDetector(max_num_faces=1, refine_landmarks=True)
-    rppg = RPPG(fps=30, roi_landmark_sets=RPPG.CHEEKS.LEFT_CHEEK)                                                     # Initialize rPPG with desired FPS, TODO make fps dynamic according to actual camera fps
-    fps = FPSMeter()
+    vision_thread = VisionThread()                                          # Initialize the vision thread
+    rppg = RPPG(fps=30, roi_landmark_sets=RPPG.CHEEKS)                  # Initialize the rPPG processor with the CHEEKS ROI set
     frame_id = 0
 
-    #We need to write something if we can't open camera
-    if not cap.isOpened():
-        print("Error: could not open camera.")
-        return
+    vision_thread.start()                                                  # Start the vision thread
+    while not vision_thread.running and vision_thread.is_alive():
+        time.sleep(0.01)  # laisser le thread initialiser la caméra
 
-    #While program is active we are catching every possible frame
-    #Ofcourse if we can't catch any we write a warrnign (usualyn starts in beggining)
+    last_buffer_frame = None
+
     while True:
-        frame = get_frame(cap)
-        if frame is None:
-            print("Warning: empty frame from camera, stopping.")
-            break
+        if not vision_thread.frame_buffer:
+            if not vision_thread.running:
+                print("Warning: vision thread stopped with an empty buffer, stopping.")
+                break
+            continue
+
+        latest_frame = vision_thread.frame_buffer[-1]
+        if latest_frame is last_buffer_frame:
+            continue
+        frame = latest_frame
+        last_buffer_frame = latest_frame
 
         #------------------------------------------------------------
         # rPPG processing
         # rPPG update with the current frame and landmarks
-        coords = detector.process(frame)
+        coords = vision_thread.last_coords
 
         if coords is not None and len(coords) > 0:
-            rppg.update_buffer(frame)
+            rppg.update_buffer(frame, coords)
 
         # Debug / visualisation: show the last extracted ROIs 1 frame every 5 frames
         if debug:
-            frame_id += 1
             if frame_id % 5 == 0:
                 for name, roi in rppg.last_rois.items():
                     if roi is not None:
@@ -46,6 +79,7 @@ def main():
         if frame_id % 30 == 0:  # par ex. toutes les ~1s
             bpm, snr, is_live = rppg.compute_liveness()
             # afficher bpm/snr sur la frame ou logger
+            print(f"Estimated BPM: {bpm}, SNR: {snr} dB, Liveness: {is_live}")
         #-----------------------------------------------------------
 
 
@@ -54,18 +88,10 @@ def main():
         #    face_score = face_recognition.update(frame)
         #    decision = fusion(face_score, rppg.liveness)
 
-        #Just calling function to write fps on screen
-        put_fps(frame, fps.tick())
+        frame_id += 1
 
-        #Writes above frame what it is
-        #Every ms we check if key ESC is pressed, in order to stop and exit
-        cv2.imshow("Vision & Detection", frame)
-        key = cv2.waitKey(1) & 0xFF
-        if key == 27:                                                       #27 is ESC in ASCII 
-            break
-
-    release_camera(cap)
-    cv2.destroyAllWindows()                                                 #Even thoe we have closed camera that dosen't mean all OpenCV windows are closed
+    vision_thread.stop()
+    vision_thread.join()
 
 if __name__ == "__main__":
     main()
