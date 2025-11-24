@@ -2,9 +2,23 @@ from vision_detection.vision_thread import VisionThread
 from rppg.rppg_class import RPPG
 import time
 import cv2
+import os
+import numpy as np
+
+from vision_detection.verification import get_embedding_from_aligned_face, compare_embeddings
 
 
 def main():
+
+    # Konstantinos: load reference embedding once
+    USER_ID = "user1"
+    ref_path = os.path.join("data", "embeddings", f"{USER_ID}.npy")
+    if not os.path.exists(ref_path):
+        print(f"[Konst] ❌ Reference embedding not found: {ref_path}")
+        return
+
+    emb_ref = np.load(ref_path)
+    print(f"[Konst] 📂 Loaded reference embedding for {USER_ID} from {ref_path}")
 
     vt = VisionThread()
     vt.start()
@@ -42,10 +56,33 @@ def main():
 
 
         #---------------------- KONSTANTINOS (VERIFICATION) ---------------
-        #aligned = vt.last_aligned_face
-        
+        aligned = vt.last_aligned_face
+        # Only try to verify when we actually have an aligned face
+        if aligned is not None:
+            # Press 'v' to run verification on the current aligned face
+            key = cv2.waitKey(1) & 0xFF
+            if key == ord('v'):
+                print("[Konst] ▶ Running verification on last_aligned_face")
 
-        #------------------------------------------------------------------
+                emb_live = get_embedding_from_aligned_face(aligned)
+                if emb_live is None:
+                    print("[Konst] ❌ Could not compute embedding (no face detected).")
+                else:
+                    distance, is_match = compare_embeddings(emb_live, emb_ref, threshold=0.7)
+
+                    print("\n[Konst] 🔍 Verification result")
+                    print("---------------------------")
+                    print(f"Distance: {distance:.4f}")
+                    print(f"Match:    {is_match}")
+
+                    if is_match:
+                        print(f"✅ ACCEPT: face matches {USER_ID}")
+                    else:
+                        print(f"❌ REJECT: face does NOT match {USER_ID}")
+        else:
+            # nothing aligned yet – optional debug print
+            pass
+        #-----------------------------------------------------------------
 
         #ESC stops EVERYTHING immediately
         if cv2.waitKey(1) == 27:
