@@ -1,5 +1,5 @@
 import numpy as np
-from scipy.signal import detrend, butter, filtfilt, find_peaks
+from scipy.signal import detrend, butter, filtfilt, find_peaks, welch
 from vision_detection.face_detection import FaceMeshDetector
 from rppg.roisets_class import ROISet
 
@@ -135,7 +135,7 @@ class RPPG:
         # Convert signal buffer to numpy array for processing
         signal = np.array(self.signal_buffer, dtype=np.float32)     # float32 used to save memory
         if len(signal) < self.buffer_size:                          # Ensure we have enough data in the buffer
-            print("Warning: Not enough data in signal buffer to compute liveness.")
+            print("Warning: Not enough data in signal buffer to compute liveness. Size of buffer:", len(signal), "Required:", self.buffer_size)
             return None, None, False
         # Detrend the signal to remove linear trends : 
         # remove slow variations in the signal that are not related to the heart rate. 
@@ -154,23 +154,33 @@ class RPPG:
         #------------------------------------------------------------------------------------------------------------------
         # Apply the bandpass filter
         filtered_signal = filtfilt(b, a, signal)
-        # Compute the FFT of the filtered signal
-        fft = np.fft.rfft(filtered_signal)
-        fft_freqs = np.fft.rfftfreq(len(filtered_signal), d=1/self.fps)
-        fft_magnitude = np.abs(fft)
+        # Compute PSD with Welch to smooth the spectrum
+        nperseg = min(len(filtered_signal), 256)
+        freqs, psd = welch(filtered_signal, fs=self.fps, nperseg=nperseg)
         # Find the peak frequency in the heart rate range
         hr_range = (self.low_hz, self.high_hz)
-        hr_indices = np.where((fft_freqs >= hr_range[0]) & (fft_freqs <= hr_range[1]))[0]
+        hr_indices = np.where((freqs >= hr_range[0]) & (freqs <= hr_range[1]))[0]
         if len(hr_indices) == 0:
             print("Warning: No frequency components found in heart rate range.")
             return None, None, False
-        peak_idx = hr_indices[np.argmax(fft_magnitude[hr_indices])]
-        peak_freq = fft_freqs[peak_idx]
+        peak_idx_in_hr = hr_indices[np.argmax(psd[hr_indices])]
+        peak_freq = freqs[peak_idx_in_hr]
         bpm = peak_freq * 60.0
-        # Compute SNR
-        signal_power = fft_magnitude[peak_idx] ** 2
-        noise_power = np.sum(fft_magnitude[hr_indices] ** 2) - signal_power
-        snr = signal_power / noise_power if noise_power > 0 else float('inf')
+
+        # Compute SNR: signal is peak bin power; noise is average power in HR band excluding a window around the peak
+        guard_hz = 0.1
+        noise_mask = (
+            (freqs >= hr_range[0])
+            & (freqs <= hr_range[1])
+            & ((freqs < peak_freq - guard_hz) | (freqs > peak_freq + guard_hz))
+        )
+        noise_bins = psd[noise_mask]
+        if noise_bins.size == 0:
+            noise_power = np.mean(psd[hr_indices])
+        else:
+            noise_power = np.mean(noise_bins)
+        signal_power = psd[peak_idx_in_hr]
+        snr = signal_power / (noise_power + 1e-12)
         snr_db = 10 * np.log10(snr)
         # Determine liveness based on SNR threshold
         is_live = snr_db >= self.snr_thresh_db
