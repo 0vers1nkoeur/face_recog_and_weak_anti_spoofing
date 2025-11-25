@@ -156,6 +156,7 @@ class RPPG:
         filtered_signal = filtfilt(b, a, signal)
         # Compute PSD with Welch to smooth the spectrum
         nperseg = min(len(filtered_signal), 256)
+        # Welch method estimates power spectral density (PSD) of the filtered signal. It is more robust to noise and provides a smoother estimate of the frequency content compared to a simple FFT.
         freqs, psd = welch(filtered_signal, fs=self.fps, nperseg=nperseg)
         # Find the peak frequency in the heart rate range
         hr_range = (self.low_hz, self.high_hz)

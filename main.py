@@ -29,6 +29,12 @@ def main():
             print(vt.last_frame is None, vt.last_coords is None)
         
         rppg.update_buffer(vt.last_frame, vt.last_coords)
+        if debug:
+            if frame_id % 5 == 0:
+                for name, roi in rppg.last_rois.items():
+                    if roi is not None:
+                        # TODO Draw the box on the ROI for better visualisation
+                        cv2.imshow(f"{name} ROI", roi)
         if frame_id % 30 == 0:  # every 1 second at 30 FPS
             bpm, snr, is_live = rppg.compute_liveness()
             print(f"Estimated BPM: {bpm}, SNR: {snr} dB, Liveness: {is_live}")
