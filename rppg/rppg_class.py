@@ -1,5 +1,5 @@
 import numpy as np
-from scipy.signal import detrend, butter, filtfilt, find_peaks, welch
+from scipy.signal import detrend, butter, filtfilt
 from vision_detection.face_detection import FaceMeshDetector
 from rppg.roisets_class import ROISet
 
@@ -22,6 +22,7 @@ class RPPG:
         high_hz=3.0,
         snr_thresh_db=3.0,
         roi_landmark_sets=None,
+        debug=False,
     ):
         """
         Initialize the RPPG processor.
@@ -32,6 +33,7 @@ class RPPG:
         self.low_hz = low_hz                                # Lower frequency bound for bandpass filter (Hz)
         self.high_hz = high_hz                              # Upper frequency bound for bandpass filter (Hz)
         self.snr_thresh_db = snr_thresh_db                  # SNR threshold in dB for liveness decision
+        self.debug = debug                                  # Toggle detailed debug
 
         # If no ROISet is chosen, use the default CHEEKS set
         if roi_landmark_sets is None:
@@ -56,6 +58,9 @@ class RPPG:
 
         # Initialize the rolling signal buffer, this will store the mean green channel values over time
         self.signal_buffer = []
+        self.last_filtered_signal = None
+
+        self.last_filtered_signal = None
     
     def update_buffer(self, frame_rgb, landmarks):
         """
@@ -154,35 +159,35 @@ class RPPG:
         #------------------------------------------------------------------------------------------------------------------
         # Apply the bandpass filter
         filtered_signal = filtfilt(b, a, signal)
-        # Compute PSD with Welch to smooth the spectrum
-        nperseg = min(len(filtered_signal), 256)
-        # Welch method estimates power spectral density (PSD) of the filtered signal. It is more robust to noise and provides a smoother estimate of the frequency content compared to a simple FFT.
-        freqs, psd = welch(filtered_signal, fs=self.fps, nperseg=nperseg)
-        # Find the peak frequency in the heart rate range
-        hr_range = (self.low_hz, self.high_hz)
-        hr_indices = np.where((freqs >= hr_range[0]) & (freqs <= hr_range[1]))[0]
-        if len(hr_indices) == 0:
+        self.last_filtered_signal = filtered_signal
+        # Rejet si quasi pas de dynamique
+        if np.std(filtered_signal) < 1e-3:  # valeur à ajuster empiriquement
+            return None, None, False
+        
+        # Compute the power spectrum using FFT
+        n_samples = filtered_signal.shape[0]
+        freqs = np.fft.rfftfreq(n_samples, d=1.0 / self.fps)
+        spectrum = np.fft.rfft(filtered_signal)
+        power = spectrum.real * spectrum.real + spectrum.imag * spectrum.imag
+
+        hr_mask = (freqs >= self.low_hz) & (freqs <= self.high_hz)
+        if not np.any(hr_mask):
             print("Warning: No frequency components found in heart rate range.")
             return None, None, False
-        peak_idx_in_hr = hr_indices[np.argmax(psd[hr_indices])]
-        peak_freq = freqs[peak_idx_in_hr]
-        bpm = peak_freq * 60.0
 
-        # Compute SNR: signal is peak bin power; noise is average power in HR band excluding a window around the peak
-        guard_hz = 0.1
-        noise_mask = (
-            (freqs >= hr_range[0])
-            & (freqs <= hr_range[1])
-            & ((freqs < peak_freq - guard_hz) | (freqs > peak_freq + guard_hz))
-        )
-        noise_bins = psd[noise_mask]
-        if noise_bins.size == 0:
-            noise_power = np.mean(psd[hr_indices])
-        else:
-            noise_power = np.mean(noise_bins)
-        signal_power = psd[peak_idx_in_hr]
-        snr = signal_power / (noise_power + 1e-12)
-        snr_db = 10 * np.log10(snr)
+        band_freqs = freqs[hr_mask]
+        band_power = power[hr_mask]
+        peak_idx = int(np.argmax(band_power))
+        peak_freq = band_freqs[peak_idx]
+        bpm = float(peak_freq * 60.0)
+
+        if bpm < 40 or bpm > 180:  # plage humaine raisonnable
+            return bpm, None, False
+        
+        noise_power = np.median(band_power)
+        snr = band_power[peak_idx] / (noise_power + 1e-12)  # éviter division par zéro
+        snr_db = float(10.0 * np.log10(snr))
+        
         # Determine liveness based on SNR threshold
         is_live = snr_db >= self.snr_thresh_db
         return bpm, snr_db, is_live
