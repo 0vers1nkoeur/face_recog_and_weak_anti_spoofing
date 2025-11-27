@@ -39,7 +39,7 @@ def align_and_crop(
     frame_bgr,
     coords: List[Tuple[int, int]],
     crop_size: int = 224,
-    save_debug_path: Optional[str] = "data/aligned_face.jpg",
+    save_debug_path: Optional[str] = None,
 ):
     #Finding centers of eyes
     (lx, ly), (rx, ry) = compute_eye_centers(coords)
@@ -71,7 +71,7 @@ def align_and_crop(
     cropped = rotated[y1:y2, x1:x2].copy()
 
     #We need to save cropped face in direcotry that we choose
-    if save_debug_path:     #Remove
+    if save_debug_path:
         os.makedirs(os.path.dirname(save_debug_path), exist_ok=True)
         cv2.imwrite(save_debug_path, cropped)
 

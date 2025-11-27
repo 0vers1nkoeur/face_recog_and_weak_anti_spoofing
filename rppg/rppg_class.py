@@ -41,7 +41,7 @@ class RPPG:
 
         # Normalize roi_landmark_sets to a dict to make processing easier
         if not isinstance(roi_landmark_sets, ROISet):
-            raise TypeError("roi_landmark_sets must be provided as ROISet presets.")
+            raise TypeError("[rPPG] roi_landmark_sets must be provided as ROISet presets.")
         
         # Convert ROISet to a dictionary for internal use
         roi_mapping = roi_landmark_sets.to_dict()
@@ -51,16 +51,14 @@ class RPPG:
 
         # Validate that at least one ROI is defined
         if not self.roi_landmark_sets:
-            raise ValueError("roi_landmark_sets must contain at least one ROI definition.")
+            raise ValueError("[rPPG] roi_landmark_sets must contain at least one ROI definition.")
 
         # Initialize last ROIs storage for debug visualisation
         self.last_rois = {name: None for name in self.roi_landmark_sets}
 
         # Initialize the rolling signal buffer, this will store the mean green channel values over time
         self.signal_buffer = []
-        self.last_filtered_signal = None
-
-        self.last_filtered_signal = None
+        self.filtered_signal_buffer = []
     
     def update_buffer(self, frame_rgb, landmarks):
         """
@@ -80,10 +78,10 @@ class RPPG:
         """
         # Sanity checks
         if frame_rgb is None or landmarks is None or len(landmarks) == 0:
-            print("Error: Missing frame or landmarks.")
+            print("[rPPG] Error: Missing frame or landmarks.")
             return
         if self.roi_landmark_sets is None or len(self.roi_landmark_sets) == 0:       # This checks if we have frame and landmarkss
-            print("Error: Missing ROI landmark sets.")
+            print("[rPPG] Error: Missing ROI landmark sets.")
             return
         #----------------------------------------------------------------------
         # 1) extract ROI(s) using landmarks of the class
@@ -96,7 +94,7 @@ class RPPG:
             try:
                 roi_points = [landmarks[i] for i in roi_indices]
             except IndexError:
-                print(f"Warning: ROI {name} references invalid landmark indices, skipping.")
+                print(f"[rPPG] Warning: ROI {name} references invalid landmark indices, skipping.")
                 continue
             # Using compute_bbox to get the bounding box of the ROI
             x1, y1, x2, y2 = FaceMeshDetector.compute_bbox(roi_points)              # We use FaceMeshDetector's static method to compute bbox
@@ -108,7 +106,7 @@ class RPPG:
             roi = frame_rgb[y1:y2, x1:x2]                                           # Extract the ROI from the frame
             # Sanity check for empty ROI
             if roi.size == 0:
-                print(f"Warning: Empty ROI for {name}, skipping.")
+                print(f"[rPPG] Warning: Empty ROI for {name}, skipping.")
                 continue
             #--------------------------------------------------------------------
             # Store the last extracted ROIs for debug visualisation for each defined ROI
@@ -118,7 +116,7 @@ class RPPG:
 
         # Check if we have any mean values computed
         if not mean_values:
-            print("Warning: No valid ROIs found, skipping frames.")
+            print("[rPPG] Warning: No valid ROIs found, skipping frames.")
             return
         #----------------------------------------------------------------------
         # 2) average mean of green channel over the available ROIs
@@ -140,7 +138,7 @@ class RPPG:
         # Convert signal buffer to numpy array for processing
         signal = np.array(self.signal_buffer, dtype=np.float32)     # float32 used to save memory
         if len(signal) < self.buffer_size:                          # Ensure we have enough data in the buffer
-            print("Warning: Not enough data in signal buffer to compute liveness. Size of buffer:", len(signal), "Required:", self.buffer_size)
+            print("[rPPG] Warning: Not enough data in signal buffer to compute liveness. Size of buffer:", len(signal), "Required:", self.buffer_size)
             return None, None, False
         # Detrend the signal to remove linear trends : 
         # remove slow variations in the signal that are not related to the heart rate. 
@@ -158,21 +156,22 @@ class RPPG:
         b,a = butter(3, [low, high], btype='bandpass')              # type: ignore
         #------------------------------------------------------------------------------------------------------------------
         # Apply the bandpass filter
-        filtered_signal = filtfilt(b, a, signal)
-        self.last_filtered_signal = filtered_signal
+        filtered_signal_buffer = filtfilt(b, a, signal)
+        # Store as a plain list so we can clear/extend it easily elsewhere
+        self.filtered_signal_buffer = filtered_signal_buffer
         # Rejet si quasi pas de dynamique
-        if np.std(filtered_signal) < 1e-3:  # valeur à ajuster empiriquement
+        if np.std(filtered_signal_buffer) < 1e-3:  # valeur à ajuster empiriquement
             return None, None, False
         
         # Compute the power spectrum using FFT
-        n_samples = filtered_signal.shape[0]
+        n_samples = filtered_signal_buffer.shape[0]
         freqs = np.fft.rfftfreq(n_samples, d=1.0 / self.fps)
-        spectrum = np.fft.rfft(filtered_signal)
+        spectrum = np.fft.rfft(filtered_signal_buffer)
         power = spectrum.real * spectrum.real + spectrum.imag * spectrum.imag
 
         hr_mask = (freqs >= self.low_hz) & (freqs <= self.high_hz)
         if not np.any(hr_mask):
-            print("Warning: No frequency components found in heart rate range.")
+            print("[rPPG] Warning: No frequency components found in heart rate range.")
             return None, None, False
 
         band_freqs = freqs[hr_mask]

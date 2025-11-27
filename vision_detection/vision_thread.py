@@ -18,16 +18,11 @@ class VisionThread(threading.Thread):
       - Detects a face
       - Aligns & crops face
       - Updates self.last_aligned_face
-      - Fills self.frame_buffer (for Lorenzo)
     It does NOT open any OpenCV window or call cv2.waitKey.
     """
 
-    def __init__(self, buffer_seconds: int = 15, fps_estimate: int = 30, camera_index: int = 0, debug: bool = False):
+    def __init__(self, fps_estimate: int = 30, camera_index: int = 0, debug: bool = False):
         super().__init__()
-
-        # buffer of raw frames for Lorenzo
-        self.buffer_size = buffer_seconds * fps_estimate
-        self.frame_buffer = deque(maxlen=self.buffer_size)
 
         # camera index (0 = default)
         self.camera_index = camera_index
@@ -62,7 +57,6 @@ class VisionThread(threading.Thread):
 
             # store frame & fill buffer (for Lorenzo)
             self.last_frame = frame.copy()
-            self.frame_buffer.append(frame.copy())
 
             # detect face
             coords = self.detector.process(frame)
@@ -86,7 +80,6 @@ class VisionThread(threading.Thread):
                     frame_bgr=frame,
                     coords=coords,
                     crop_size=224,
-                    save_debug_path=None,
                 )
                 if aligned is not None:
                     self.last_aligned_face = aligned

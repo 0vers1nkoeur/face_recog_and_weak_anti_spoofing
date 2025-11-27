@@ -6,7 +6,7 @@ class ROISet:
     # Create a list of macros to set the landmark indices for ROI extraction compute_bbox
     RIGHT_CHEEK = [234, 93, 132, 58, 172, 136, 150, 149, 176, 148]
     LEFT_CHEEK = [454, 323, 361, 288, 397, 365, 379, 378, 400, 377]
-    FOREHEAD = [10, 338, 297, 332, 284, 251, 389, 356]
+    FOREHEAD = [9, 105, 104 ,103, 10, 334, 332, 333, 297, 338, 109, 67]
 
     def __init__(self, mapping):
         """
