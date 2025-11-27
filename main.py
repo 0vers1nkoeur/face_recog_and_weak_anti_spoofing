@@ -79,10 +79,9 @@ def main():
                 if counter % 30 == 0:
                     # Compute liveness
                     bpm, snr, is_live = rppg.compute_liveness()
-                    if len(rppg.filtered_signal_buffer) != 0 :
-                        if len(liveness_list) >= SIZELIST :
-                            liveness_list.pop(0)    # keep list size manageable by removing oldest entry
-                        liveness_list.append(is_live)
+                    if len(liveness_list) >= SIZELIST :
+                        liveness_list.pop(0)    # keep list size manageable by removing oldest entry
+                    liveness_list.append(is_live)
 
                     if debug: print ("\n[rPPG]--------------------------------------------------------\n"
                                     "liveness_list:", liveness_list, 
@@ -97,7 +96,7 @@ def main():
                         print("\n[rPPG] ✅ Liveness confirmed by rPPG.\n")
 
                         # Save last aligned face for verification. The file will be named with the datetime
-                        aligned_path = f"{PREVIEW_DIR}/{datetime.now().strftime('%Y%m%d_%H:%M:%S')}.jpg"
+                        aligned_path = f"{PREVIEW_DIR}/{datetime.now().strftime('%Y%m%d_%H-%M-%S')}.jpg"
 
                         print("[rPPG] ▶ Saving last aligned face for verification to:", aligned_path)
 

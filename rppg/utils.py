@@ -95,7 +95,7 @@ class SignalPlotter:
         def _handler(event, fig=fig):
             if event.key == "s":
                 self._save_dir.mkdir(parents=True, exist_ok=True)
-                ts = datetime.now().strftime('%Y%m%d_%H:%M:%S')
+                ts = datetime.now().strftime('%Y%m%d_%H-%M-%S')
                 path = self._save_dir / f"rppg_{ts}.png"
                 fig.savefig(path)
                 print(f"[rPPG] Figure saved: {path}")
