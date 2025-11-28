@@ -48,9 +48,9 @@ def main():
     print(f"Match:    {is_match}")
 
     if is_match:
-        print(f"⚠️  ACCEPT (this would be a FALSE ACCEPT if this is not {user_id})")
+        print(f"✅ ACCEPT (this would be a FALSE ACCEPT if this is not {user_id})")
     else:
-        print(f"✅ REJECT: face does NOT match {user_id}")
+        print(f"❌ REJECT: face does NOT match {user_id}")
 
 if __name__ == "__main__":
     main()
