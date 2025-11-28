@@ -65,7 +65,7 @@ class SignalPlotter:
             ax_raw.set_title("Raw signal")
             ax_raw.legend()
         else:
-            ax_raw.text(0.5, 0.5, "No raw signal", ha="center", va="center")
+            ax_raw.text(0.5, 0.5, "No raw signal. Waiting for the buffer to fill...", ha="center", va="center")
         ax_raw.set_xlabel("Time (s)")
         ax_raw.set_ylabel("Amplitude")
         ax_raw.grid(True, alpha=0.3)
@@ -76,7 +76,7 @@ class SignalPlotter:
             ax_filt.set_title("Filtered signal")
             ax_filt.legend()
         else:
-            ax_filt.text(0.5, 0.5, "No filtered signal", ha="center", va="center")
+            ax_filt.text(0.5, 0.5, "No filtered signal. Waiting for the buffer to fill...", ha="center", va="center")
         ax_filt.set_xlabel("Time (s)")
         ax_filt.set_ylabel("Amplitude")
         ax_filt.grid(True, alpha=0.3)

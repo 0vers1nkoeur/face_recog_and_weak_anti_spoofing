@@ -1,5 +1,4 @@
 from datetime import datetime
-from signal import pause
 from vision_detection.vision_thread import VisionThread
 from rppg.rppg_class import RPPG
 import time
@@ -15,6 +14,7 @@ from rppg.utils import SignalPlotter
 
 SIZELIST = 10  # size of the list of liveness for the final choice to accept/reject
 PREVIEW_DIR = "data/verification"
+MODE = "phone"  # "phone" or "laptop"
 
 def ensure_mediapipe_env():
     """Relance le script avec l'interpréteur du venv mediapipe si on n'est pas déjà dedans."""
@@ -39,7 +39,7 @@ def main():
 
     vt = VisionThread()
     vt.start()
-    rppg = RPPG(fps=30, window_seconds=15, snr_thresh_db=10.0, roi_landmark_sets=RPPG.CHEEKS)
+    rppg = RPPG(fps=30, window_seconds=15, snr_thresh_db=10.0, roi_landmark_sets=RPPG.CHEEKS+RPPG.FOREHEAD)
     plotter = SignalPlotter(rppg, stop_callback=vt.stop)
     debug = True
     debug_rois_enabled = False  # toggled via touche clavier
@@ -48,6 +48,7 @@ def main():
     liveness_list = []
     phase = 1  # phase
     aligned = None  # last aligned face for verification
+    counter_before_stop = 15  # Time to wait before blocking after several failed attempts
 
     print("VisionThread started.")
 
@@ -72,42 +73,55 @@ def main():
                             if roi is not None:
                                 win_name = f"{name} ROI"
                                 cv2.imshow(win_name, roi)
-                                # Décale chaque fenêtre pour éviter la superposition
                                 cv2.moveWindow(win_name, 40 + idx * (roi.shape[1] + 40), 40)
                 
                 # Every 30 frames...
-                if counter % 30 == 0:
-                    # Compute liveness
-                    bpm, snr, is_live = rppg.compute_liveness()
-                    if len(liveness_list) >= SIZELIST :
-                        liveness_list.pop(0)    # keep list size manageable by removing oldest entry
-                    liveness_list.append(is_live)
+                if counter % 30 == 0 :
 
-                    if debug: print ("\n[rPPG]--------------------------------------------------------\n"
-                                    "liveness_list:", liveness_list, 
-                                    f"\nCurrent BPM: {bpm}, SNR: {snr} dB, Liveness: {is_live}\n"
-                                    "-----------------------------------------------------------------\n")
-                    
                     if debug:
                         plotter.plot_signals()
                         plt.pause(0.001)
-                    
-                    if len(liveness_list) == SIZELIST and liveness_list.count(True) > SIZELIST / 2:
-                        print("\n[rPPG] ✅ Liveness confirmed by rPPG.\n")
 
-                        # Save last aligned face for verification. The file will be named with the datetime
-                        aligned_path = f"{PREVIEW_DIR}/{datetime.now().strftime('%Y%m%d_%H-%M-%S')}.jpg"
+                    if len(rppg.signal_buffer) == rppg.buffer_size:
+                        # Compute liveness
+                        bpm, snr, is_live = rppg.compute_liveness()
+                        if bpm is None and snr is None and is_live is False:
+                            if debug: print("[rPPG] Not enough signal for liveness computation.\n")
+                            continue
+                        elif len(liveness_list) >= SIZELIST:
+                            liveness_list.pop(0)    # keep list size manageable by removing oldest entry
+                        liveness_list.append(is_live)
 
-                        print("[rPPG] ▶ Saving last aligned face for verification to:", aligned_path)
+                        if debug: print ("\n[rPPG]--------------------------------------------------------\n"
+                                        "liveness_list:", liveness_list, 
+                                        f"\nCurrent BPM: {bpm}, SNR: {snr} dB, Liveness: {is_live}\n"
+                                        "-----------------------------------------------------------------\n")
+                        
+                        if len(liveness_list) == SIZELIST:
+                            print("[rPPG] Liveness results collected. Making final decision... Number of attempts left before stop:", counter_before_stop)
+                            counter_before_stop -= 1
 
-                        aligned = align_and_crop(
-                            frame_bgr=vt.last_frame,
-                            coords=vt.last_coords,
-                            crop_size=224,
-                            save_debug_path=aligned_path,
-                        )
+                            # Final decision based on majority in liveness_list or timeout
+                            if counter_before_stop == 0 :
+                                print("\n[rPPG] ❌ Too many failed liveness attempts. Stopping the process...\n")
+                                vt.stop()
+                                break
+                            elif liveness_list.count(True) > SIZELIST / 2:
+                                print("\n[rPPG] ✅ Liveness confirmed by rPPG.\n")
 
-                        phase = 2  # go to verification phase
+                                # Save last aligned face for verification. The file will be named with the datetime
+                                aligned_path = f"{PREVIEW_DIR}/{datetime.now().strftime('%Y%m%d_%H-%M-%S')}.jpg"
+
+                                print("[rPPG] ▶ Saving last aligned face for verification to:", aligned_path)
+
+                                aligned = align_and_crop(
+                                frame_bgr=vt.last_frame,
+                                coords=vt.last_coords,
+                                crop_size=224,
+                                save_debug_path=aligned_path,
+                                )
+
+                                phase = 2  # go to verification phase
 
             elif vt.last_coords is None:
                 if counter % 30 == 0 : 
@@ -154,13 +168,16 @@ def main():
                     print(f"Distance: {distance:.4f}")
                     print(f"Match:    {is_match}")
                     if is_match:
+                        print("---------------------------")
                         print(f"✅ ACCEPT: face matches {USER_ID}")
                         # Pause rPPG and verification processing
                         phase = 0
                     else:
-                        print(f"❌ REJECT: face does NOT match {USER_ID}")                            # pause for 30 seconds to avoid immediate retries
-                        print("[Konst] ⏳ Pausing verification for 30 seconds to prevent immediate retries.")
-                        time.sleep(30)
+                        print("---------------------------")
+                        print(f"❌ REJECT: face does NOT match {USER_ID}")
+                        if MODE == "phone" : 
+                            print("[Konst] ⏳ Pausing verification for 30 seconds to prevent immediate retries.")
+                            time.sleep(30)  # pause for 30 seconds to avoid immediate retries
                         phase = 1  # go back to rPPG processing phase
             else:
                 # nothing aligned yet – optional debug print
@@ -175,7 +192,6 @@ def main():
 
         if phase == 0 :
             print("[rPPG & Konst] ✅ Verification successful. System will close...)")
-            time.sleep(5)  # wait a bit to let user see the message
             vt.stop()       # stop Thread
             break           # EXIT MAIN LOOP IMMEDIATELY
 
