@@ -111,32 +111,45 @@ def force_stop(vt, cap):
         pass
 
 def main():
-    # ===================== KONSTANTINOS: LOAD REFERENCE =====================
-    USER_ID = "user1"
+    # ===================== KONSTANTINOS: LOAD ENROLLED GALLERY =====================
+    # We support multiple enrolled users. Each image file in REF_DIR is one template.
+    # Example filenames:
+    #   data/Enrolled/aleksa_01.jpg -> user_id = "aleksa_01"
+    #   data/Enrolled/konst_01.jpg  -> user_id = "konst_01"
 
-    # Choose which enrolled image to use as reference
-    # (Put Aleksa's best aligned picture here)
-    ref_img_name = "aligned_face_01.jpg"   # <- change this name if you want another enrolled image
-    ref_img_path = os.path.join(REF_DIR, ref_img_name)
+    enrolled_embeddings = {}  # user_id -> embedding
 
-    if not os.path.exists(ref_img_path):
-        print(f"[Konst] ❌ Reference aligned face not found: {ref_img_path}")
+    if not os.path.exists(REF_DIR):
+        print(f"[Konst] ❌ Enrolled directory not found: {REF_DIR}")
         return
 
-    ref_bgr = cv2.imread(ref_img_path)
-    if ref_bgr is None:
-        print(f"[Konst] ❌ Could not read reference image: {ref_img_path}")
+    for fname in os.listdir(REF_DIR):
+        fpath = os.path.join(REF_DIR, fname)
+        if not os.path.isfile(fpath):
+            continue
+        if not fname.lower().endswith((".jpg", ".jpeg", ".png")):
+            continue
+
+        user_id = os.path.splitext(fname)[0]  # e.g. "aleksa_01"
+        ref_bgr = cv2.imread(fpath)
+        if ref_bgr is None:
+            print(f"[Konst] ⚠️ Could not read enrolled image: {fpath}")
+            continue
+
+        ref_rgb = cv2.cvtColor(ref_bgr, cv2.COLOR_BGR2RGB)
+        emb_ref = get_embedding_from_aligned_face(ref_rgb)
+        if emb_ref is None:
+            print(f"[Konst] ⚠️ Could not compute embedding for enrolled image: {fpath}")
+            continue
+
+        enrolled_embeddings[user_id] = emb_ref
+
+    if not enrolled_embeddings:
+        print("[Konst] ❌ No valid enrolled faces found in Enrolled/.")
         return
 
-    ref_rgb = cv2.cvtColor(ref_bgr, cv2.COLOR_BGR2RGB)
-
-    # Compute embedding for reference face (Aleksa)
-    emb_ref = get_embedding_from_aligned_face(ref_rgb)
-    if emb_ref is None:
-        print("[Konst] ❌ Could not compute reference embedding from enrolled face.")
-        return
-
-    print(f"[Konst] 📸 Loaded reference face from {ref_img_path}")
+    print(f"[Konst] 📸 Loaded {len(enrolled_embeddings)} enrolled face(s) from {REF_DIR}:")
+    print("       ", ", ".join(enrolled_embeddings.keys()))
 
     # -------- VisionThread (processing only) --------
     vt = VisionThread()
@@ -162,6 +175,7 @@ def main():
 
     final_distance = None
     final_match = None
+    final_user_id = None
 
     print("VisionThread started.")
 
@@ -425,25 +439,32 @@ def main():
                 if emb_live is None:
                     print("[Konst] ❌ Could not compute embedding (no face detected).")
                 else:
-                    # stricter threshold (0.12) for this project
-                    distance, is_match = compare_embeddings(
-                        emb_live, emb_ref, threshold=0.12
-                    )
+                    # Compare against all enrolled users and pick best match
+                    best_user_id = None
+                    best_distance = None
 
-                    final_distance = distance
-                    final_match = is_match
+                    for user_id, emb_ref in enrolled_embeddings.items():
+                        distance, _ = compare_embeddings(emb_live, emb_ref, threshold=THRESHOLD)
+                        if best_distance is None or distance < best_distance:
+                            best_distance = distance
+                            best_user_id = user_id
 
-                    print("\n[Konst] 🔍 Verification result")
+                    final_distance = best_distance
+                    final_user_id = best_user_id
+                    final_match = best_distance is not None and best_distance < THRESHOLD
+
+                    print("\n[Konst] 🔍 Verification result (gallery)")
                     print("---------------------------")
-                    print(f"Distance: {distance:.4f}")
-                    print(f"Match:    {is_match}")
+                    print(f"Best match user: {best_user_id}")
+                    print(f"Distance: {best_distance:.4f}" if best_distance is not None else "Distance: None")
+                    print(f"Match:    {final_match}")
 
-                    if is_match:
+                    if final_match:
                         print("---------------------------")
-                        print(f"✅ ACCEPT: face matches {USER_ID}")
+                        print(f"✅ ACCEPT: face matches {best_user_id}")
                     else:
                         print("---------------------------")
-                        print(f"❌ REJECT: face does NOT match {USER_ID}")
+                        print(f"❌ REJECT: face does NOT match any enrolled user")
 
                     # In both cases, end the process after one decision
                     phase = 0
@@ -463,6 +484,8 @@ def main():
             if final_distance is not None and final_match is not None:
                 print(f"  • Final distance: {final_distance:.4f}")
                 print(f"  • Final decision: {'ACCEPT' if final_match else 'REJECT'}")
+                if final_user_id is not None:
+                    print(f"  • Matched user: {final_user_id}")
             vt.stop()  # stop Thread
             break  # EXIT MAIN LOOP IMMEDIATELY
 
