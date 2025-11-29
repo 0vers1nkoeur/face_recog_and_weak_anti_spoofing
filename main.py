@@ -8,22 +8,29 @@ import sys
 from pathlib import Path
 import numpy as np
 import matplotlib.pyplot as plt
+
 from vision_detection.verification import get_embedding_from_aligned_face, compare_embeddings
 from vision_detection.face_alignment import align_and_crop
 from rppg.utils import SignalPlotter
 
-SIZELIST = 10  # size of the list of liveness for the final choice to accept/reject
-PREVIEW_DIR = "data/verification"
-MODE = "phone"  # "phone" or "laptop"
+SIZELIST = 10                     # size of the list of liveness for the final choice to accept/reject
+PREVIEW_DIR = "data/verification" # live captures (what rPPG saves)
+REF_DIR = "data/Enrolled"         # enrolled users (reference faces)
+MODE = "phone"                    # "phone" or "laptop"
+
 
 def ensure_mediapipe_env():
-    """Relance le script avec l'interpréteur du venv mediapipe si on n'est pas déjà dedans."""
+    """
+    Relaunches the script with the mediapipe venv interpreter
+    if we are not already inside it.
+    """
     venv_python = Path(__file__).parent / "mediapipe_env" / "bin" / "python"
     if venv_python.exists() and Path(sys.executable).resolve() != venv_python.resolve():
         os.execv(venv_python, [str(venv_python)] + sys.argv)
 
 
 ensure_mediapipe_env()
+
 
 #For easy close of camera, GUI **AND** thread (IF YOU ARE GOING TO STOP CAMERA OR PROGRAM IN ANY PLEASE USE THIS!!!)
 def force_stop(vt, cap):
@@ -54,16 +61,32 @@ def force_stop(vt, cap):
         pass
 
 def main():
-
-    # Konstantinos: load reference embedding once
+    # ===================== KONSTANTINOS: LOAD REFERENCE =====================
     USER_ID = "user1"
-    ref_path = os.path.join("data", "embeddings", f"{USER_ID}.npy")
-    if not os.path.exists(ref_path):
-        print(f"[Konst] ❌ Reference embedding not found: {ref_path}")
+
+    # Choose which enrolled image to use as reference
+    # (Put Aleksa's best aligned picture here)
+    ref_img_name = "aligned_face_01.jpg"   # <- change this name if you want another enrolled image
+    ref_img_path = os.path.join(REF_DIR, ref_img_name)
+
+    if not os.path.exists(ref_img_path):
+        print(f"[Konst] ❌ Reference aligned face not found: {ref_img_path}")
         return
 
-    emb_ref = np.load(ref_path)
-    print(f"[Konst] 📂 Loaded reference embedding for {USER_ID} from {ref_path}")
+    ref_bgr = cv2.imread(ref_img_path)
+    if ref_bgr is None:
+        print(f"[Konst] ❌ Could not read reference image: {ref_img_path}")
+        return
+
+    ref_rgb = cv2.cvtColor(ref_bgr, cv2.COLOR_BGR2RGB)
+
+    # Compute embedding for reference face (Aleksa)
+    emb_ref = get_embedding_from_aligned_face(ref_rgb)
+    if emb_ref is None:
+        print("[Konst] ❌ Could not compute reference embedding from enrolled face.")
+        return
+
+    print(f"[Konst] 📸 Loaded reference face from {ref_img_path}")
 
     # -------- VisionThread (processing only) --------
     vt = VisionThread()
@@ -81,11 +104,14 @@ def main():
 
     debug_rois_enabled = False  # toggled via 'r' key
     counter = 0
-    is_live = False  # default liveness state
+    is_live = False             # default liveness state
     liveness_list = []
-    phase = 1  # phase
-    aligned = None  # last aligned face for verification
-    counter_before_stop = 15  # Time to wait before blocking after several failed attempts
+    phase = 1                   # 1 = rPPG, 2 = verification, 0 = finished
+    aligned = None              # last aligned face for verification
+    counter_before_stop = 15    # attempts before blocking after several failed tries
+
+    final_distance = None
+    final_match = None
     
     print("VisionThread started.")
 
@@ -100,6 +126,18 @@ def main():
     
     cv2.namedWindow("Vision & Detection", cv2.WINDOW_NORMAL)
 
+    # ------------------------------------------------
+
+    # -------- CAMERA OPENED IN MAIN  ----------------
+    cap = cv2.VideoCapture(0)
+    if not cap.isOpened():
+        print("❌ Cannot open camera")
+        force_stop(vt, cap)
+        return
+    
+    cv2.namedWindow("Vision & Detection", cv2.WINDOW_NORMAL)
+
+    # ===================== MAIN LOOP =======================================
     while True:
 
         # Key for interactions
@@ -274,12 +312,18 @@ def main():
                             elif liveness_list.count(True) > SIZELIST / 2:
                                 print("\n[rPPG] ✅ Liveness confirmed by rPPG.\n")
 
-                                # Save last aligned face for verification. The file will be named with the datetime
-                                aligned_path = f"{PREVIEW_DIR}/{datetime.now().strftime('%Y%m%d_%H-%M-%S')}.jpg"
-
+                                # Save last aligned face for verification. File named with datetime
+                                aligned_path = os.path.join(
+                                    PREVIEW_DIR,
+                                    f"{datetime.now().strftime('%Y%m%d_%H-%M-%S')}.jpg"
+                                )
                                 print("[rPPG] ▶ Saving last aligned face for verification to:", aligned_path)
 
                                 aligned = align_and_crop(
+                                    frame_bgr=vt.last_frame,
+                                    coords=vt.last_coords,
+                                    crop_size=224,
+                                    save_debug_path=aligned_path,
                                     frame_bgr=vt.last_frame,
                                     coords=vt.last_coords,
                                     crop_size=224,
@@ -298,7 +342,7 @@ def main():
                 if counter % rppg.fps == 0:
                     print('No frame available...\n')
                 continue
-        #------------------------------------------------------------------
+        # -------------------------------------------------------------------
 
         if key == ord('r'):
             debug_rois_enabled = not debug_rois_enabled
@@ -321,8 +365,11 @@ def main():
         #---------------------- KONSTANTINOS (VERIFICATION) ---------------
 
         if phase == 2:  # verification phase
+        # ---------------------- KONSTANTINOS (VERIFICATION) ----------------
+        if phase == 2:  # verification phase
 
             print("[Konst] ✅ Liveness confirmed by rPPG, proceeding with verification.")
+
 
             # Only try to verify when we actually have an aligned face
             if aligned is not None:
@@ -333,16 +380,22 @@ def main():
                 if emb_live is None:
                     print("[Konst] ❌ Could not compute embedding (no face detected).")
                 else:
-                    distance, is_match = compare_embeddings(emb_live, emb_ref, threshold=0.7)
+                    # stricter threshold (0.12) for this project
+                    distance, is_match = compare_embeddings(
+                        emb_live, emb_ref, threshold=0.12
+                    )
+
+                    final_distance = distance
+                    final_match = is_match
+
                     print("\n[Konst] 🔍 Verification result")
                     print("---------------------------")
                     print(f"Distance: {distance:.4f}")
                     print(f"Match:    {is_match}")
+
                     if is_match:
                         print("---------------------------")
                         print(f"✅ ACCEPT: face matches {USER_ID}")
-                        # Pause rPPG and verification processing
-                        phase = 0
                     else:
                         print("---------------------------")
                         print(f"❌ REJECT: face does NOT match {USER_ID}")
@@ -351,10 +404,11 @@ def main():
                             time.sleep(30)  # pause for 30 seconds to avoid immediate retries
                         phase = 1  # go back to rPPG processing phase
             else:
-                # nothing aligned yet – optional debug print
+                # nothing aligned yet
                 pass
         #-----------------------------------------------------------------
 
+        # ESC stops EVERYTHING immediately
         if key == 27:  # Escape key
             print("ESC pressed. Exiting...")
             force_stop(vt, cap)
