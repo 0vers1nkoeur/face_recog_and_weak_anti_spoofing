@@ -111,67 +111,32 @@ def force_stop(vt, cap):
         pass
 
 def main():
-    # ===================== KONSTANTINOS: LOAD ENROLLED GALLERY =====================
-    # We support multiple enrolled users. Each image file in REF_DIR is one template.
-    # Example filenames:
-    #   data/Enrolled/aleksa_01.jpg -> user_id = "aleksa_01"
-    #   data/Enrolled/konst_01.jpg  -> user_id = "konst_01"
+    # ===================== KONSTANTINOS: LOAD REFERENCE =====================
+    USER_ID = "user1"
 
-    enrolled_embeddings = {}  # user_id -> list of embeddings
-    enrollment_detector = FaceMeshDetector(max_num_faces=1, refine_landmarks=True)
+    # Choose which enrolled image to use as reference
+    # (Put Aleksa's best aligned picture here)
+    ref_img_name = "aligned_face_01.jpg"   # <- change this name if you want another enrolled image
+    ref_img_path = os.path.join(REF_DIR, ref_img_name)
 
-    if not os.path.exists(REF_DIR):
-        print(f"[Konst] ❌ Enrolled directory not found: {REF_DIR}")
+    if not os.path.exists(ref_img_path):
+        print(f"[Konst] ❌ Reference aligned face not found: {ref_img_path}")
         return
 
-    for fname in os.listdir(REF_DIR):
-        fpath = os.path.join(REF_DIR, fname)
-        if not os.path.isfile(fpath):
-            continue
-        if not fname.lower().endswith((".jpg", ".jpeg", ".png")):
-            continue
-
-        raw_id = os.path.splitext(fname)[0]  # e.g. "aleksa_01"
-        user_id = canonical_user_id(fname)   # drop trailing numeric suffix
-
-        # IMPORTANT: keep images in BGR here so they match the live `aligned` image
-        ref_bgr = cv2.imread(fpath)
-        if ref_bgr is None:
-            print(f"[Konst] ⚠️ Could not read enrolled image: {fpath}")
-            continue
-
-        coords = enrollment_detector.process(ref_bgr)
-        if coords is None:
-            print(f"[Konst] ⚠️ No face detected in enrolled image: {fpath}")
-            continue
-
-        aligned_ref = align_and_crop(ref_bgr, coords, crop_size=224)
-        if aligned_ref is None:
-            print(f"[Konst] ⚠️ Could not align enrolled image: {fpath}")
-            continue
-
-        # Save aligned reference so you can visually inspect what the model sees
-        os.makedirs(REF_ALIGNED_DIR, exist_ok=True)
-        aligned_save_path = os.path.join(REF_ALIGNED_DIR, f"{raw_id}.jpg")
-        cv2.imwrite(aligned_save_path, aligned_ref)
-
-        emb_ref = get_embedding_from_aligned_face(aligned_ref)
-        if emb_ref is None:
-            print(f"[Konst] ⚠️ Could not compute embedding for enrolled image: {fpath}")
-            continue
-
-        enrolled_embeddings.setdefault(user_id, []).append(emb_ref)
-
-    for user_id, embs in enrolled_embeddings.items():
-        if len(embs) > 1:
-            print(f"[Konst] 📦 Loaded {len(embs)} templates for {user_id}")
-
-    if not enrolled_embeddings:
-        print("[Konst] ❌ No valid enrolled faces found in Enrolled/.")
+    ref_bgr = cv2.imread(ref_img_path)
+    if ref_bgr is None:
+        print(f"[Konst] ❌ Could not read reference image: {ref_img_path}")
         return
 
-    print(f"[Konst] 📸 Loaded {len(enrolled_embeddings)} enrolled face(s) from {REF_DIR}:")
-    print("       ", ", ".join(enrolled_embeddings.keys()))
+    ref_rgb = cv2.cvtColor(ref_bgr, cv2.COLOR_BGR2RGB)
+
+    # Compute embedding for reference face (Aleksa)
+    emb_ref = get_embedding_from_aligned_face(ref_rgb)
+    if emb_ref is None:
+        print("[Konst] ❌ Could not compute reference embedding from enrolled face.")
+        return
+
+    print(f"[Konst] 📸 Loaded reference face from {ref_img_path}")
 
     # -------- VisionThread (processing only) --------
     vt = VisionThread()
@@ -193,12 +158,10 @@ def main():
     liveness_list = []
     phase = 1                   # 1 = rPPG, 2 = verification, 0 = finished
     aligned = None              # last aligned face for verification
-    live_embeddings = []        # collect multiple live embeddings for averaging
     counter_before_stop = 15    # attempts before blocking after several failed tries
 
     final_distance = None
     final_match = None
-    final_user_id = None
 
     print("VisionThread started.")
 
@@ -451,81 +414,58 @@ def main():
 
             if phase == 2 or RPPG_SKIP:  # verification phase
 
-                print("[Konst] ✅ Liveness confirmed by rPPG, proceeding with verification.")
+            print("[Konst] ✅ Liveness confirmed by rPPG, proceeding with verification.")
 
-                # Collect multiple live embeddings, then decide
-                if vt.last_frame is not None and vt.last_coords is not None and len(live_embeddings) < LIVE_EMB_COUNT:
-                    aligned_live = align_and_crop(
-                        frame_bgr=vt.last_frame,
-                        coords=vt.last_coords,
-                        crop_size=224,
+            # Only try to verify when we actually have an aligned face
+            if aligned is not None:
+                print("[Konst] ▶ Running verification on last_aligned_face")
+
+                emb_live = get_embedding_from_aligned_face(aligned)
+
+                if emb_live is None:
+                    print("[Konst] ❌ Could not compute embedding (no face detected).")
+                else:
+                    # stricter threshold (0.12) for this project
+                    distance, is_match = compare_embeddings(
+                        emb_live, emb_ref, threshold=0.12
                     )
-                    if aligned_live is not None:
-                        emb_live = get_embedding_from_aligned_face(aligned_live)
-                        if emb_live is not None:
-                            live_embeddings.append(emb_live)
-                            print(f"[Konst] ▶ Collected live embedding {len(live_embeddings)}/{LIVE_EMB_COUNT}")
 
-                if len(live_embeddings) >= LIVE_EMB_COUNT:
-                    # For each user, compute per-sample min distance across their templates, then take median across samples
-                    distances = []
-                    for user_id, ref_emb_list in enrolled_embeddings.items():
-                        per_sample_distances = []
-                        for emb_live in live_embeddings:
-                            dists = [
-                                compare_embeddings(emb_live, emb_ref, threshold=THRESHOLD)[0]
-                                for emb_ref in ref_emb_list
-                            ]
-                            per_sample_distances.append(min(dists))
-                        median_distance = float(np.median(per_sample_distances))
-                        distances.append((median_distance, user_id))
+                    final_distance = distance
+                    final_match = is_match
 
-                    distances.sort(key=lambda x: x[0])
-
-                    best_distance, best_user_id = distances[0]
-                    second_distance = distances[1][0] if len(distances) > 1 else None
-
-                    final_distance = best_distance
-                    final_user_id = best_user_id
-                    gap_ok = second_distance is None or (second_distance - best_distance) > SECOND_GAP
-                    final_match = best_distance is not None and best_distance < THRESHOLD and gap_ok
-
-                    print("\n[Konst] 🔍 Verification result (gallery)")
+                    print("\n[Konst] 🔍 Verification result")
                     print("---------------------------")
-                    print(f"Best match user: {best_user_id}")
-                    print(f"Distance: {best_distance:.4f}" if best_distance is not None else "Distance: None")
-                    if second_distance is not None:
-                        print(f"2nd-best distance: {second_distance:.4f} (needs gap > {SECOND_GAP:.4f})")
-                    print(f"Match:    {final_match}")
+                    print(f"Distance: {distance:.4f}")
+                    print(f"Match:    {is_match}")
 
-                    if final_match:
+                    if is_match:
                         print("---------------------------")
-                        print(f"✅ ACCEPT: face matches {best_user_id}")
+                        print(f"✅ ACCEPT: face matches {USER_ID}")
                     else:
                         print("---------------------------")
-                        print(f"❌ REJECT: face does NOT match any enrolled user")
+                        print(f"❌ REJECT: face does NOT match {USER_ID}")
 
                     # In both cases, end the process after one decision
                     phase = 0
-            # -------------------------------------------------------------------
+            else:
+                # nothing aligned yet
+                pass
+        # -------------------------------------------------------------------
 
-            if phase == 0:
-                print("\n[rPPG & Konst] 🧾 Process finished. System will close...")
-                if final_distance is not None and final_match is not None:
-                    print(f"  • Final distance: {final_distance:.4f}")
-                    print(f"  • Final decision: {'ACCEPT' if final_match else 'REJECT'}")
-                    if final_user_id is not None:
-                        print(f"  • Matched user: {final_user_id}")
-                vt.stop()  # stop Thread
-                break  # EXIT MAIN LOOP IMMEDIATELY
-
-        
         # ESC stops EVERYTHING immediately
         if key == 27:  # Escape key
             print("ESC pressed. Exiting...")
-            force_stop(vt, cap)
-            break
-            
+            vt.stop()  # stop Thread
+            break  # EXIT MAIN LOOP IMMEDIATELY
+
+        if phase == 0:
+            print("\n[rPPG & Konst] 🧾 Process finished. System will close...")
+            if final_distance is not None and final_match is not None:
+                print(f"  • Final distance: {final_distance:.4f}")
+                print(f"  • Final decision: {'ACCEPT' if final_match else 'REJECT'}")
+            vt.stop()  # stop Thread
+            break  # EXIT MAIN LOOP IMMEDIATELY
+
         # If thread died for any reason
         if not vt.running:
             force_stop(vt, cap)
