@@ -17,7 +17,7 @@ SIZELIST = 10                     # size of the list of liveness for the final c
 PREVIEW_DIR = "data/verification" # live captures (what rPPG saves)
 REF_DIR = "data/Enrolled"         # enrolled users (reference faces)
 MODE = "phone"                    # "phone" or "laptop"
-THRESHOLD = 0.12                  # distance threshold for accept / reject
+THRESHOLD = 0.125                  # distance threshold for accept / reject
 
 
 def ensure_mediapipe_env():
@@ -82,13 +82,14 @@ def main():
             continue
 
         user_id = os.path.splitext(fname)[0]  # e.g. "aleksa_01"
+
+        # IMPORTANT: keep images in BGR here so they match the live `aligned` image
         ref_bgr = cv2.imread(fpath)
         if ref_bgr is None:
             print(f"[Konst] ⚠️ Could not read enrolled image: {fpath}")
             continue
 
-        ref_rgb = cv2.cvtColor(ref_bgr, cv2.COLOR_BGR2RGB)
-        emb_ref = get_embedding_from_aligned_face(ref_rgb)
+        emb_ref = get_embedding_from_aligned_face(ref_bgr)
         if emb_ref is None:
             print(f"[Konst] ⚠️ Could not compute embedding for enrolled image: {fpath}")
             continue
@@ -390,6 +391,7 @@ def main():
             if aligned is not None:
                 print("[Konst] ▶ Running verification on last_aligned_face")
 
+                # IMPORTANT: `aligned` is BGR from the camera pipeline
                 emb_live = get_embedding_from_aligned_face(aligned)
 
                 if emb_live is None:
@@ -401,6 +403,7 @@ def main():
 
                     for user_id, emb_ref in enrolled_embeddings.items():
                         distance, _ = compare_embeddings(emb_live, emb_ref, threshold=THRESHOLD)
+                        print(f"[Konst][DEBUG] {user_id} distance = {distance:.4f}")
                         if best_distance is None or distance < best_distance:
                             best_distance = distance
                             best_user_id = user_id
