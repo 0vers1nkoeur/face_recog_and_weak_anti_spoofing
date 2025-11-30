@@ -18,7 +18,7 @@ class RPPG:
         self,
         fps,
         window_seconds=10,
-        low_hz=0.75,
+        low_hz=0.70,
         high_hz=3.0,
         snr_thresh_db=3.0,
         roi_landmark_sets=None,
@@ -153,7 +153,7 @@ class RPPG:
         # Here, we only put into parameters the parameters of the filter
         # 3 is the order of the filter, [low, high] are the cutoff frequencies and btype is bandpass
         # How it works ? We use the known Butterworth
-        b,a = butter(3, [low, high], btype='bandpass')              # type: ignore
+        b,a = butter(4, [low, high], btype='bandpass')              # type: ignore
         #------------------------------------------------------------------------------------------------------------------
         # Apply the bandpass filter
         filtered_signal_buffer = filtfilt(b, a, signal)
