@@ -25,6 +25,35 @@ def ensure_mediapipe_env():
 
 ensure_mediapipe_env()
 
+#For easy close of camera, GUI and thread (IF YOU ARE GOING TO STOP CAMERA OR PROGRAM IN ANY PLEASE USE THIS!!!)
+def force_stop(vt, cap):
+    try:
+        cap.release()
+    except:
+        pass
+
+    try:
+        cv2.destroyAllWindows()
+    except:
+        pass
+
+    try:
+        vt.stop()
+    except:
+        pass
+
+    try:
+        if hasattr(vt, "frame_queue"):  #Unblocks thread
+            vt.frame_queue.put(None) 
+    except:
+        pass
+
+    try:
+        vt.join()
+    except:
+        pass
+
+
 def main():
 
     # Konstantinos: load reference embedding once
@@ -37,10 +66,20 @@ def main():
     emb_ref = np.load(ref_path)
     print(f"[Konst] 📂 Loaded reference embedding for {USER_ID} from {ref_path}")
 
+    # -------- VisionThread (processing only) --------
     vt = VisionThread()
     vt.start()
-    rppg = RPPG(fps=30, window_seconds=15, snr_thresh_db=10.0, roi_landmark_sets=RPPG.CHEEKS+RPPG.FOREHEAD)
+    # ------------------------------------------------
+
+    # -------- rPPG ----------------------------------
+    rppg = RPPG(
+        fps=30,
+        window_seconds=15,
+        snr_thresh_db=10.0,
+        roi_landmark_sets=RPPG.CHEEKS + RPPG.FOREHEAD
+    )
     plotter = SignalPlotter(rppg, stop_callback=vt.stop)
+
     debug = True
     debug_rois_enabled = False  # toggled via touche clavier
     counter = 0
@@ -52,31 +91,148 @@ def main():
 
     print("VisionThread started.")
 
+    # ------------------------------------------------
+
+    # -------- CAMERA OPENED IN MAIN  ----------------
+    cap = cv2.VideoCapture(0)
+    if not cap.isOpened():
+        print("❌ Cannot open camera")
+        force_stop(vt, cap)
+        return
+    
+    cv2.namedWindow("Vision & Detection", cv2.WINDOW_NORMAL)
+
     while True:
 
-        #print("Buffer len:", len(vt.frame_buffer))
-        #time.sleep(1)
+        # Read frame from camera
+        ret, frame = cap.read()
+        if not ret:
+            print("❌ Cannot read frame")
+            continue
 
-        while not vt.running and vt.is_alive():
-            time.sleep(0.01)  # let the thread initialize the camera
-        
+        # Send frame to background processing thread
+        vt.submit_frame(frame)
+
+        # -------------------------------- ALEKSA (GUI) ----------------------------------
+
+        # Checking if face is detected
+        face_detected = vt.last_coords is not None
+
+        # Semi-transparent header 
+        overlay = frame.copy()
+        cv2.rectangle(
+            overlay,
+            (0, 0),
+            (frame.shape[1], 60),
+            (0, 0, 0),
+            -1
+        )
+        alpha = 0.35
+        frame = cv2.addWeighted(overlay, alpha, frame, 1 - alpha, 0)
+
+        # Status tekst: Detected / Not detected
+        status_text = "Detected" if face_detected else "Not detected"
+        status_color = (0, 255, 0) if face_detected else (0, 0, 255)
+
+        cv2.putText(
+            frame,
+            status_text,
+            (20, 38),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.9,
+            status_color,
+            2,
+        )
+
+        #Just adding read/green dot on header if face is detected or not
+        dot_color = (0, 255, 0) if face_detected else (0, 0, 255)
+        cv2.circle(frame, (frame.shape[1] - 30, 30), 9, dot_color, -1)
+
+        #Angles in borrders instead a big green box
+        if vt.last_bbox is not None:
+            x1, y1, x2, y2 = vt.last_bbox
+            COLOR = (0, 200, 255)
+            THICK = 2
+            corner_len = 25
+
+            # top-left
+            cv2.line(frame, (x1, y1), (x1 + corner_len, y1), COLOR, THICK)
+            cv2.line(frame, (x1, y1), (x1, y1 + corner_len), COLOR, THICK)
+            # top-right
+            cv2.line(frame, (x2, y1), (x2 - corner_len, y1), COLOR, THICK)
+            cv2.line(frame, (x2, y1), (x2, y1 + corner_len), COLOR, THICK)
+            # bottom-left
+            cv2.line(frame, (x1, y2), (x1 + corner_len, y2), COLOR, THICK)
+            cv2.line(frame, (x1, y2), (x1, y2 - corner_len), COLOR, THICK)
+            # bottom-right
+            cv2.line(frame, (x2, y2), (x2 - corner_len, y2), COLOR, THICK)
+            cv2.line(frame, (x2, y2), (x2, y2 - corner_len), COLOR, THICK)
+
+        # FPS from VisionThread
+        cv2.putText(
+            frame,
+            f"FPS: {vt.last_fps}",
+            (20, 85),  # pomjereno ispod headera
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.7,
+            (255, 255, 255),
+            2,
+        )
+
+        # rPPG Buffer size
+        buffer_size = len(rppg.signal_buffer)
+        buffer_max = rppg.buffer_size
+
+        bar_x = 20
+        bar_y = frame.shape[0] - 60
+        bar_w = 250   # width of progress bar
+        bar_h = 15    # height of progress bar
+
+        #Background of buffer line
+        cv2.rectangle(frame, (bar_x, bar_y), (bar_x + bar_w, bar_y + bar_h), (80, 80, 80), -1)
+
+        #Filled part of buffer line
+        if buffer_max > 0:
+            filled_w = int((buffer_size / buffer_max) * bar_w)
+            cv2.rectangle(frame, (bar_x, bar_y), (bar_x + filled_w, bar_y + bar_h), (0, 180, 255), -1)
+            if buffer_size/buffer_max == 1:
+                cv2.rectangle(frame, (bar_x, bar_y), (bar_x + filled_w, bar_y + bar_h), (0, 255, 0), -1)
+
+        #Frame
+        cv2.rectangle(frame, (bar_x, bar_y), (bar_x + bar_w, bar_y + bar_h), (255, 255, 255), 2)
+
+        #Buffer size in text
+        cv2.putText(
+            frame,
+            f"Buffer: {buffer_size}/{buffer_max}",
+            (bar_x, bar_y - 8),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.5,
+            (255, 255, 255),
+            1,
+        )
+
+        # GUI Display
+        cv2.imshow("Vision & Detection", frame)
+
+        #---------------------------------------------------------------------------
 
         counter += 1
 
-        #---------------------- LORENZO (ANTI-SPOOF) ----------------------
-        if phase == 1 :  # rPPG processing phase
+        #---------------------- LORENZO (ANTI-SPOOF) -------------------------------
+        if phase == 1:  # rPPG processing phase
             if vt.last_frame is not None and vt.last_coords is not None:
                 rppg.update_buffer(vt.last_frame, vt.last_coords)
 
-                if False :  # Set to True to enable debug plots every 5 frames
-                        for idx, (name, roi) in enumerate(rppg.last_rois.items()):
-                            if roi is not None:
-                                win_name = f"{name} ROI"
-                                cv2.imshow(win_name, roi)
-                                cv2.moveWindow(win_name, 40 + idx * (roi.shape[1] + 40), 40)
-                
+                if False:  # Set to True to enable debug plots every 5 frames
+                    for idx, (name, roi) in enumerate(rppg.last_rois.items()):
+                        if roi is not None:
+                            win_name = f"{name} ROI"
+                            cv2.imshow(win_name, roi)
+                            cv2.moveWindow(win_name, 40 + idx * (roi.shape[1] + 40), 40)
+
                 # Every 30 frames...
-                if counter % 30 == 0 :
+                if counter % 30 == 0:
 
                     if debug:
                         plotter.plot_signals()
@@ -86,25 +242,29 @@ def main():
                         # Compute liveness
                         bpm, snr, is_live = rppg.compute_liveness()
                         if bpm is None and snr is None and is_live is False:
-                            if debug: print("[rPPG] Not enough signal for liveness computation.\n")
+                            if debug:
+                                print("[rPPG] Not enough signal for liveness computation.\n")
                             continue
                         elif len(liveness_list) >= SIZELIST:
                             liveness_list.pop(0)    # keep list size manageable by removing oldest entry
                         liveness_list.append(is_live)
 
-                        if debug: print ("\n[rPPG]--------------------------------------------------------\n"
-                                        "liveness_list:", liveness_list, 
-                                        f"\nCurrent BPM: {bpm}, SNR: {snr} dB, Liveness: {is_live}\n"
-                                        "-----------------------------------------------------------------\n")
-                        
+                        if debug:
+                            print("\n[rPPG]--------------------------------------------------------\n"
+                                  "liveness_list:", liveness_list,
+                                  f"\nCurrent BPM: {bpm}, SNR: {snr} dB, Liveness: {is_live}\n"
+                                  "-----------------------------------------------------------------\n")
+
                         if len(liveness_list) == SIZELIST:
-                            print("[rPPG] Liveness results collected. Making final decision... Number of attempts left before stop:", counter_before_stop)
+                            print("[rPPG] Liveness results collected. Making final decision... Number of attempts left before stop:",
+                                  counter_before_stop)
                             counter_before_stop -= 1
 
                             # Final decision based on majority in liveness_list or timeout
-                            if counter_before_stop == 0 :
+                            if counter_before_stop == 0:
                                 print("\n[rPPG] ❌ Too many failed liveness attempts. Stopping the process...\n")
-                                vt.stop()
+
+                                force_stop(vt, cap)
                                 break
                             elif liveness_list.count(True) > SIZELIST / 2:
                                 print("\n[rPPG] ✅ Liveness confirmed by rPPG.\n")
@@ -115,24 +275,24 @@ def main():
                                 print("[rPPG] ▶ Saving last aligned face for verification to:", aligned_path)
 
                                 aligned = align_and_crop(
-                                frame_bgr=vt.last_frame,
-                                coords=vt.last_coords,
-                                crop_size=224,
-                                save_debug_path=aligned_path,
+                                    frame_bgr=vt.last_frame,
+                                    coords=vt.last_coords,
+                                    crop_size=224,
+                                    save_debug_path=aligned_path,
                                 )
 
                                 phase = 2  # go to verification phase
 
             elif vt.last_coords is None:
-                if counter % 30 == 0 : 
+                if counter % 30 == 0:
                     print('No face detected, clearing rPPG buffers...\n')
                 rppg.signal_buffer = []  # reset buffer if no face detected
-                rppg.filtered_signal_buffer = [] # reset filtered buffer if no face detected
-                plt.close()
+                rppg.filtered_signal_buffer = []  # reset filtered buffer if no face detected
+                
                 plt.pause(0.001)
                 continue
-            else :
-                if counter % 30 == 0 : 
+            else:
+                if counter % 30 == 0:
                     print('No frame available...\n')
                 continue
         #------------------------------------------------------------------
@@ -148,11 +308,11 @@ def main():
                     cv2.destroyWindow(f"{name} ROI")
 
         #---------------------- KONSTANTINOS (VERIFICATION) ---------------
-        
-        if phase == 2 :  # verification phase
+
+        if phase == 2:  # verification phase
 
             print("[Konst] ✅ Liveness confirmed by rPPG, proceeding with verification.")
-            
+
             # Only try to verify when we actually have an aligned face
             if aligned is not None:
                 print("[Konst] ▶ Running verification on last_aligned_face")
@@ -175,33 +335,31 @@ def main():
                     else:
                         print("---------------------------")
                         print(f"❌ REJECT: face does NOT match {USER_ID}")
-                        if MODE == "phone" : 
+                        if MODE == "phone":
                             print("[Konst] ⏳ Pausing verification for 30 seconds to prevent immediate retries.")
                             time.sleep(30)  # pause for 30 seconds to avoid immediate retries
                         phase = 1  # go back to rPPG processing phase
             else:
                 # nothing aligned yet – optional debug print
                 pass
-            #-----------------------------------------------------------------
+        #-----------------------------------------------------------------
 
-        #ESC stops EVERYTHING immediately
-        if key == 27: # Escape key
+        if key == 27:  # Escape key
             print("ESC pressed. Exiting...")
-            vt.stop()       # stop Thread
-            break           # EXIT MAIN LOOP IMMEDIATELY
-
-        if phase == 0 :
-            print("[rPPG & Konst] ✅ Verification successful. System will close...)")
-            vt.stop()       # stop Thread
-            break           # EXIT MAIN LOOP IMMEDIATELY
-
-        #If thread died for any reason
-        if not vt.running:
+            force_stop(vt, cap)
             break
 
-    vt.join()
+        if phase == 0:
+            print("[rPPG & Konst] ✅ Verification successful. System will close...)")
+            force_stop(vt, cap)
+            break
+
+        if not vt.running:
+            force_stop(vt, cap)
+            break
+
+    force_stop(vt, cap)
     print("VisionThread stopped")
-    cv2.destroyAllWindows()  #Close all windows immediately
 
 
 if __name__ == "__main__":

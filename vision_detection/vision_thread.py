@@ -1,6 +1,6 @@
 import cv2
 import threading
-from collections import deque
+import queue
 import numpy as np
 
 # relative imports inside the vision_detection package
@@ -39,21 +39,42 @@ class VisionThread(threading.Thread):
         self.detector = FaceMeshDetector(max_num_faces=1, refine_landmarks=True)
         self.fps_meter = FPSMeter()
         self.eye_smoother = EyeSmoother(window=5)
+        self.last_fps = 0
+
+        # NEW: safe queue for frames
+        self.frame_queue = queue.Queue(maxsize=1)  # always only latest frame
 
     def stop(self):
         """Ask the thread to stop."""
         self.running = False
 
+    def submit_frame(self, frame):
+        """Main thread calls this to send a frame for processing."""
+        if not self.running:
+            return
+        # drop old frame if thread is slow
+        if self.frame_queue.full():
+            try:
+                self.frame_queue.get_nowait()
+            except:
+                pass
+        self.frame_queue.put(frame)
+
     def run(self):
         """Main loop that runs in background."""
-        cap = init_camera(self.camera_index)
         self.running = True
-        print("Camera thread started")
+        print("Camera thread started (processing only).")
 
         while self.running:
-            frame = get_frame(cap)           # BGR frame from camera
+            try:
+                frame = self.frame_queue.get(timeout=0.1)
+            except queue.Empty:
+                continue
+
             if frame is None:
                 continue
+
+            # ---- PROCESS EXACTLY THE SAME AS BEFORE ----
 
             # store frame & fill buffer (for Lorenzo)
             self.last_frame = frame.copy()
@@ -85,22 +106,7 @@ class VisionThread(threading.Thread):
                     self.last_aligned_face = aligned
 
             # FPS counter (no GUI, just keep it updated)
-            _ = int(self.fps_meter.tick())
+            self.last_fps = int(self.fps_meter.tick())
 
-            #GUI show & keyboard handling (guarded for headless environments)
-            if self.debug:
-                try:
-                    cv2.imshow("Vision & Detection", frame)
-                    if cv2.waitKey(1) == 27:
-                        self.stop()
-                except cv2.error as exc:
-                    # When running headless OpenCV may lack GUI support; disable debug windows gracefully.
-                    print(f"Warning: OpenCV GUI unavailable ({exc}), disabling debug view.")
-                    self.debug = False
-                    cv2.destroyAllWindows()
-
-        #Clean up
-        print("Stopping camera GUI")
-        release_camera(cap)
-        cv2.destroyAllWindows()
         print("Camera thread stopped")
+        cv2.destroyAllWindows()
