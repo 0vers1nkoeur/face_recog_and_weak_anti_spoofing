@@ -20,6 +20,12 @@ def main():
     emb_ref = np.load(ref_path)
     print(f"📂 Loaded reference embedding for {user_id} from {ref_path}")
 
+    # New HOG-based embedding has shape (1764,). Bail out early if the stored
+    # reference comes from the older pipeline.
+    if emb_ref.shape[0] != 1764:
+        print("⚠️ Stored embedding uses an old format. Recreate it with the current pipeline.")
+        return
+
     # 2. Load OTHER person image
     img_path = os.path.join("data", "verification", "other_01.jpg")
     if not os.path.exists(img_path):
@@ -31,16 +37,14 @@ def main():
         print(f"❌ Could not read image file: {img_path}")
         return
 
-    img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
-
     # 3. Compute embedding for other person
-    emb_live = get_embedding_from_aligned_face(img_rgb)
+    emb_live = get_embedding_from_aligned_face(img_bgr)
     if emb_live is None:
         print("❌ Could not compute embedding (no face detected?).")
         return
 
-    # 4. Compare embeddings with a stricter threshold
-    distance, is_match = compare_embeddings(emb_live, emb_ref, threshold=0.15)
+    # 4. Compare embeddings with a stricter threshold for the HOG embedding
+    distance, is_match = compare_embeddings(emb_live, emb_ref, threshold=0.16)
 
     print("\n🔍 Verification result (OTHER PERSON TEST)")
     print("-----------------------------------------")

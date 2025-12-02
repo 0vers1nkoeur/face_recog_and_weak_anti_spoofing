@@ -11,13 +11,17 @@ import matplotlib.pyplot as plt
 
 from vision_detection.verification import get_embedding_from_aligned_face, compare_embeddings
 from vision_detection.face_alignment import align_and_crop
+from vision_detection.face_detection import FaceMeshDetector
 from rppg.utils import SignalPlotter
 
 SIZELIST = 10                     # size of the list of liveness for the final choice to accept/reject
 PREVIEW_DIR = "data/verification" # live captures (what rPPG saves)
 REF_DIR = "data/Enrolled"         # enrolled users (reference faces)
+REF_ALIGNED_DIR = "data/Enrolled_aligned"  # debug: aligned crops of enrolled faces
 MODE = "phone"                    # "phone" or "laptop"
-THRESHOLD = 0.125                  # distance threshold for accept / reject
+THRESHOLD = 0.195                 # distance threshold for accept / reject (HOG space)
+LIVE_EMB_COUNT = 10               # number of live embeddings to collect for a stable decision
+SECOND_GAP = 0.05                 # require best user to beat 2nd-best by this margin
 
 
 def ensure_mediapipe_env():
@@ -31,6 +35,15 @@ def ensure_mediapipe_env():
 
 
 ensure_mediapipe_env()
+
+
+def canonical_user_id(fname: str) -> str:
+    """Drop a trailing numeric suffix to group multiple samples of the same user."""
+    base = os.path.splitext(fname)[0]
+    parts = base.rsplit("_", 1)
+    if len(parts) == 2 and parts[1].isdigit():
+        return parts[0]
+    return base
 
 
 #For easy close of camera, GUI **AND** thread (IF YOU ARE GOING TO STOP CAMERA OR PROGRAM IN ANY PLEASE USE THIS!!!)
@@ -68,7 +81,8 @@ def main():
     #   data/Enrolled/aleksa_01.jpg -> user_id = "aleksa_01"
     #   data/Enrolled/konst_01.jpg  -> user_id = "konst_01"
 
-    enrolled_embeddings = {}  # user_id -> embedding
+    enrolled_embeddings = {}  # user_id -> list of embeddings
+    enrollment_detector = FaceMeshDetector(max_num_faces=1, refine_landmarks=True)
 
     if not os.path.exists(REF_DIR):
         print(f"[Konst] ❌ Enrolled directory not found: {REF_DIR}")
@@ -81,7 +95,8 @@ def main():
         if not fname.lower().endswith((".jpg", ".jpeg", ".png")):
             continue
 
-        user_id = os.path.splitext(fname)[0]  # e.g. "aleksa_01"
+        raw_id = os.path.splitext(fname)[0]  # e.g. "aleksa_01"
+        user_id = canonical_user_id(fname)   # drop trailing numeric suffix
 
         # IMPORTANT: keep images in BGR here so they match the live `aligned` image
         ref_bgr = cv2.imread(fpath)
@@ -89,12 +104,31 @@ def main():
             print(f"[Konst] ⚠️ Could not read enrolled image: {fpath}")
             continue
 
-        emb_ref = get_embedding_from_aligned_face(ref_bgr)
+        coords = enrollment_detector.process(ref_bgr)
+        if coords is None:
+            print(f"[Konst] ⚠️ No face detected in enrolled image: {fpath}")
+            continue
+
+        aligned_ref = align_and_crop(ref_bgr, coords, crop_size=224)
+        if aligned_ref is None:
+            print(f"[Konst] ⚠️ Could not align enrolled image: {fpath}")
+            continue
+
+        # Save aligned reference so you can visually inspect what the model sees
+        os.makedirs(REF_ALIGNED_DIR, exist_ok=True)
+        aligned_save_path = os.path.join(REF_ALIGNED_DIR, f"{raw_id}.jpg")
+        cv2.imwrite(aligned_save_path, aligned_ref)
+
+        emb_ref = get_embedding_from_aligned_face(aligned_ref)
         if emb_ref is None:
             print(f"[Konst] ⚠️ Could not compute embedding for enrolled image: {fpath}")
             continue
 
-        enrolled_embeddings[user_id] = emb_ref
+        enrolled_embeddings.setdefault(user_id, []).append(emb_ref)
+
+    for user_id, embs in enrolled_embeddings.items():
+        if len(embs) > 1:
+            print(f"[Konst] 📦 Loaded {len(embs)} templates for {user_id}")
 
     if not enrolled_embeddings:
         print("[Konst] ❌ No valid enrolled faces found in Enrolled/.")
@@ -123,6 +157,7 @@ def main():
     liveness_list = []
     phase = 1                   # 1 = rPPG, 2 = verification, 0 = finished
     aligned = None              # last aligned face for verification
+    live_embeddings = []        # collect multiple live embeddings for averaging
     counter_before_stop = 15    # attempts before blocking after several failed tries
 
     final_distance = None
@@ -387,50 +422,67 @@ def main():
             print("[Konst] ✅ Liveness confirmed by rPPG, proceeding with verification.")
 
 
-            # Only try to verify when we actually have an aligned face
-            if aligned is not None:
-                print("[Konst] ▶ Running verification on last_aligned_face")
+            # Collect multiple live embeddings, then decide
+            if aligned is not None and not live_embeddings:
+                emb0 = get_embedding_from_aligned_face(aligned)
+                if emb0 is not None:
+                    live_embeddings.append(emb0)
+                    print(f"[Konst] ▶ Collected live embedding 1/{LIVE_EMB_COUNT}")
 
-                # IMPORTANT: `aligned` is BGR from the camera pipeline
-                emb_live = get_embedding_from_aligned_face(aligned)
+            if vt.last_frame is not None and vt.last_coords is not None and len(live_embeddings) < LIVE_EMB_COUNT:
+                aligned_live = align_and_crop(
+                    frame_bgr=vt.last_frame,
+                    coords=vt.last_coords,
+                    crop_size=224,
+                )
+                if aligned_live is not None:
+                    emb_live = get_embedding_from_aligned_face(aligned_live)
+                    if emb_live is not None:
+                        live_embeddings.append(emb_live)
+                        print(f"[Konst] ▶ Collected live embedding {len(live_embeddings)}/{LIVE_EMB_COUNT}")
 
-                if emb_live is None:
-                    print("[Konst] ❌ Could not compute embedding (no face detected).")
-                else:
-                    # Compare against all enrolled users and pick best match
-                    best_user_id = None
-                    best_distance = None
+            if len(live_embeddings) >= LIVE_EMB_COUNT:
+                # For each user, compute per-sample min distance across their templates, then take median across samples
+                distances = []
+                for user_id, ref_emb_list in enrolled_embeddings.items():
+                    per_sample_distances = []
+                    for emb_live in live_embeddings:
+                        dists = [
+                            compare_embeddings(emb_live, emb_ref, threshold=THRESHOLD)[0]
+                            for emb_ref in ref_emb_list
+                        ]
+                        per_sample_distances.append(min(dists))
+                    median_distance = float(np.median(per_sample_distances))
+                    distances.append((median_distance, user_id))
 
-                    for user_id, emb_ref in enrolled_embeddings.items():
-                        distance, _ = compare_embeddings(emb_live, emb_ref, threshold=THRESHOLD)
-                        print(f"[Konst][DEBUG] {user_id} distance = {distance:.4f}")
-                        if best_distance is None or distance < best_distance:
-                            best_distance = distance
-                            best_user_id = user_id
+                distances.sort(key=lambda x: x[0])
 
-                    final_distance = best_distance
-                    final_user_id = best_user_id
-                    final_match = best_distance is not None and best_distance < THRESHOLD
+                best_distance, best_user_id = distances[0]
+                second_distance = distances[1][0] if len(distances) > 1 else None
 
-                    print("\n[Konst] 🔍 Verification result (gallery)")
+                final_distance = best_distance
+                final_user_id = best_user_id
+                gap_ok = second_distance is None or (second_distance - best_distance) > SECOND_GAP
+                final_match = best_distance is not None and best_distance < THRESHOLD and gap_ok
+
+                print("\n[Konst] 🔍 Verification result (gallery)")
+                print("---------------------------")
+                print(f"Best match user: {best_user_id}")
+                print(f"Distance: {best_distance:.4f}" if best_distance is not None else "Distance: None")
+                if second_distance is not None:
+                    print(f"2nd-best distance: {second_distance:.4f} (needs gap > {SECOND_GAP:.4f})")
+                print(f"Match:    {final_match}")
+
+                if final_match:
                     print("---------------------------")
-                    print(f"Best match user: {best_user_id}")
-                    print(f"Distance: {best_distance:.4f}" if best_distance is not None else "Distance: None")
-                    print(f"Match:    {final_match}")
+                    print(f"✅ ACCEPT: face matches {best_user_id}")
+                else:
+                    print("---------------------------")
+                    print(f"❌ REJECT: face does NOT match any enrolled user")
 
-                    if final_match:
-                        print("---------------------------")
-                        print(f"✅ ACCEPT: face matches {best_user_id}")
-                    else:
-                        print("---------------------------")
-                        print(f"❌ REJECT: face does NOT match any enrolled user")
-
-                    # In both cases, end the process after one decision
-                    phase = 0
-            else:
-                # nothing aligned yet
-                pass
-        #-----------------------------------------------------------------
+                # In both cases, end the process after one decision
+                phase = 0
+        # -------------------------------------------------------------------
 
         # ESC stops EVERYTHING immediately
         if key == 27:  # Escape key
