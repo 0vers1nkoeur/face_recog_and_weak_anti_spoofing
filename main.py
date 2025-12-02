@@ -375,10 +375,6 @@ def main():
                                     coords=vt.last_coords,
                                     crop_size=224,
                                     save_debug_path=aligned_path,
-                                    frame_bgr=vt.last_frame,
-                                    coords=vt.last_coords,
-                                    crop_size=224,
-                                    save_debug_path=aligned_path,
                                 )
 
                                 phase = 2  # go to verification phase
@@ -415,8 +411,6 @@ def main():
 
         #---------------------- KONSTANTINOS (VERIFICATION) ---------------
 
-        if phase == 2:  # verification phase
-        # ---------------------- KONSTANTINOS (VERIFICATION) ----------------
         if phase == 2:  # verification phase
 
             print("[Konst] ✅ Liveness confirmed by rPPG, proceeding with verification.")
