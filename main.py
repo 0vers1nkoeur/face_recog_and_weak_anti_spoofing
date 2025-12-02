@@ -8,22 +8,43 @@ import sys
 from pathlib import Path
 import numpy as np
 import matplotlib.pyplot as plt
+
 from vision_detection.verification import get_embedding_from_aligned_face, compare_embeddings
 from vision_detection.face_alignment import align_and_crop
+from vision_detection.face_detection import FaceMeshDetector
 from rppg.utils import SignalPlotter
 
-SIZELIST = 10  # size of the list of liveness for the final choice to accept/reject
-PREVIEW_DIR = "data/verification"
-MODE = "phone"  # "phone" or "laptop"
+SIZELIST = 10                     # size of the list of liveness for the final choice to accept/reject
+PREVIEW_DIR = "data/verification" # live captures (what rPPG saves)
+REF_DIR = "data/Enrolled"         # enrolled users (reference faces)
+REF_ALIGNED_DIR = "data/Enrolled_aligned"  # debug: aligned crops of enrolled faces
+MODE = "phone"                    # "phone" or "laptop"
+THRESHOLD = 0.195                 # distance threshold for accept / reject (HOG space)
+LIVE_EMB_COUNT = 10               # number of live embeddings to collect for a stable decision
+SECOND_GAP = 0.05                 # require best user to beat 2nd-best by this margin
+
 
 def ensure_mediapipe_env():
-    """Relance le script avec l'interpréteur du venv mediapipe si on n'est pas déjà dedans."""
+    """
+    Relaunches the script with the mediapipe venv interpreter
+    if we are not already inside it.
+    """
     venv_python = Path(__file__).parent / "mediapipe_env" / "bin" / "python"
     if venv_python.exists() and Path(sys.executable).resolve() != venv_python.resolve():
         os.execv(venv_python, [str(venv_python)] + sys.argv)
 
 
 ensure_mediapipe_env()
+
+
+def canonical_user_id(fname: str) -> str:
+    """Drop a trailing numeric suffix to group multiple samples of the same user."""
+    base = os.path.splitext(fname)[0]
+    parts = base.rsplit("_", 1)
+    if len(parts) == 2 and parts[1].isdigit():
+        return parts[0]
+    return base
+
 
 #For easy close of camera, GUI **AND** thread (IF YOU ARE GOING TO STOP CAMERA OR PROGRAM IN ANY PLEASE USE THIS!!!)
 def force_stop(vt, cap):
@@ -54,16 +75,67 @@ def force_stop(vt, cap):
         pass
 
 def main():
+    # ===================== KONSTANTINOS: LOAD ENROLLED GALLERY =====================
+    # We support multiple enrolled users. Each image file in REF_DIR is one template.
+    # Example filenames:
+    #   data/Enrolled/aleksa_01.jpg -> user_id = "aleksa_01"
+    #   data/Enrolled/konst_01.jpg  -> user_id = "konst_01"
 
-    # Konstantinos: load reference embedding once
-    USER_ID = "user1"
-    ref_path = os.path.join("data", "embeddings", f"{USER_ID}.npy")
-    if not os.path.exists(ref_path):
-        print(f"[Konst] ❌ Reference embedding not found: {ref_path}")
+    enrolled_embeddings = {}  # user_id -> list of embeddings
+    enrollment_detector = FaceMeshDetector(max_num_faces=1, refine_landmarks=True)
+
+    if not os.path.exists(REF_DIR):
+        print(f"[Konst] ❌ Enrolled directory not found: {REF_DIR}")
         return
 
-    emb_ref = np.load(ref_path)
-    print(f"[Konst] 📂 Loaded reference embedding for {USER_ID} from {ref_path}")
+    for fname in os.listdir(REF_DIR):
+        fpath = os.path.join(REF_DIR, fname)
+        if not os.path.isfile(fpath):
+            continue
+        if not fname.lower().endswith((".jpg", ".jpeg", ".png")):
+            continue
+
+        raw_id = os.path.splitext(fname)[0]  # e.g. "aleksa_01"
+        user_id = canonical_user_id(fname)   # drop trailing numeric suffix
+
+        # IMPORTANT: keep images in BGR here so they match the live `aligned` image
+        ref_bgr = cv2.imread(fpath)
+        if ref_bgr is None:
+            print(f"[Konst] ⚠️ Could not read enrolled image: {fpath}")
+            continue
+
+        coords = enrollment_detector.process(ref_bgr)
+        if coords is None:
+            print(f"[Konst] ⚠️ No face detected in enrolled image: {fpath}")
+            continue
+
+        aligned_ref = align_and_crop(ref_bgr, coords, crop_size=224)
+        if aligned_ref is None:
+            print(f"[Konst] ⚠️ Could not align enrolled image: {fpath}")
+            continue
+
+        # Save aligned reference so you can visually inspect what the model sees
+        os.makedirs(REF_ALIGNED_DIR, exist_ok=True)
+        aligned_save_path = os.path.join(REF_ALIGNED_DIR, f"{raw_id}.jpg")
+        cv2.imwrite(aligned_save_path, aligned_ref)
+
+        emb_ref = get_embedding_from_aligned_face(aligned_ref)
+        if emb_ref is None:
+            print(f"[Konst] ⚠️ Could not compute embedding for enrolled image: {fpath}")
+            continue
+
+        enrolled_embeddings.setdefault(user_id, []).append(emb_ref)
+
+    for user_id, embs in enrolled_embeddings.items():
+        if len(embs) > 1:
+            print(f"[Konst] 📦 Loaded {len(embs)} templates for {user_id}")
+
+    if not enrolled_embeddings:
+        print("[Konst] ❌ No valid enrolled faces found in Enrolled/.")
+        return
+
+    print(f"[Konst] 📸 Loaded {len(enrolled_embeddings)} enrolled face(s) from {REF_DIR}:")
+    print("       ", ", ".join(enrolled_embeddings.keys()))
 
     # -------- VisionThread (processing only) --------
     vt = VisionThread()
@@ -81,12 +153,17 @@ def main():
 
     debug_rois_enabled = False  # toggled via 'r' key
     counter = 0
-    is_live = False  # default liveness state
+    is_live = False             # default liveness state
     liveness_list = []
-    phase = 1  # phase
-    aligned = None  # last aligned face for verification
-    counter_before_stop = 15  # Time to wait before blocking after several failed attempts
-    
+    phase = 1                   # 1 = rPPG, 2 = verification, 0 = finished
+    aligned = None              # last aligned face for verification
+    live_embeddings = []        # collect multiple live embeddings for averaging
+    counter_before_stop = 15    # attempts before blocking after several failed tries
+
+    final_distance = None
+    final_match = None
+    final_user_id = None
+
     print("VisionThread started.")
 
     # ------------------------------------------------
@@ -100,6 +177,18 @@ def main():
     
     cv2.namedWindow("Vision & Detection", cv2.WINDOW_NORMAL)
 
+    # ------------------------------------------------
+
+    # -------- CAMERA OPENED IN MAIN  ----------------
+    cap = cv2.VideoCapture(0)
+    if not cap.isOpened():
+        print("❌ Cannot open camera")
+        force_stop(vt, cap)
+        return
+    
+    cv2.namedWindow("Vision & Detection", cv2.WINDOW_NORMAL)
+
+    # ===================== MAIN LOOP =======================================
     while True:
 
         # Key for interactions
@@ -274,12 +363,14 @@ def main():
                             elif liveness_list.count(True) > SIZELIST / 2:
                                 print("\n[rPPG] ✅ Liveness confirmed by rPPG.\n")
 
-                                # Save last aligned face for verification. The file will be named with the datetime
-                                aligned_path = f"{PREVIEW_DIR}/{datetime.now().strftime('%Y%m%d_%H-%M-%S')}.jpg"
-
+                                # Save last aligned face for verification. File named with datetime
+                                aligned_path = os.path.join(
+                                    PREVIEW_DIR,
+                                    f"{datetime.now().strftime('%Y%m%d_%H-%M-%S')}.jpg"
+                                )
                                 print("[rPPG] ▶ Saving last aligned face for verification to:", aligned_path)
 
-                                aligned = align_and_crop(
+                                _ = align_and_crop(
                                     frame_bgr=vt.last_frame,
                                     coords=vt.last_coords,
                                     crop_size=224,
@@ -298,7 +389,7 @@ def main():
                 if counter % rppg.fps == 0:
                     print('No frame available...\n')
                 continue
-        #------------------------------------------------------------------
+        # -------------------------------------------------------------------
 
         if key == ord('r'):
             debug_rois_enabled = not debug_rois_enabled
@@ -324,47 +415,80 @@ def main():
 
             print("[Konst] ✅ Liveness confirmed by rPPG, proceeding with verification.")
 
-            # Only try to verify when we actually have an aligned face
-            if aligned is not None:
-                print("[Konst] ▶ Running verification on last_aligned_face")
 
-                emb_live = get_embedding_from_aligned_face(aligned)
+            # Collect multiple live embeddings, then decide
+            if vt.last_frame is not None and vt.last_coords is not None and len(live_embeddings) < LIVE_EMB_COUNT:
+                aligned_live = align_and_crop(
+                    frame_bgr=vt.last_frame,
+                    coords=vt.last_coords,
+                    crop_size=224,
+                )
+                if aligned_live is not None:
+                    emb_live = get_embedding_from_aligned_face(aligned_live)
+                    if emb_live is not None:
+                        live_embeddings.append(emb_live)
+                        print(f"[Konst] ▶ Collected live embedding {len(live_embeddings)}/{LIVE_EMB_COUNT}")
 
-                if emb_live is None:
-                    print("[Konst] ❌ Could not compute embedding (no face detected).")
-                else:
-                    distance, is_match = compare_embeddings(emb_live, emb_ref, threshold=0.7)
-                    print("\n[Konst] 🔍 Verification result")
+            if len(live_embeddings) >= LIVE_EMB_COUNT:
+                # For each user, compute per-sample min distance across their templates, then take median across samples
+                distances = []
+                for user_id, ref_emb_list in enrolled_embeddings.items():
+                    per_sample_distances = []
+                    for emb_live in live_embeddings:
+                        dists = [
+                            compare_embeddings(emb_live, emb_ref, threshold=THRESHOLD)[0]
+                            for emb_ref in ref_emb_list
+                        ]
+                        per_sample_distances.append(min(dists))
+                    median_distance = float(np.median(per_sample_distances))
+                    distances.append((median_distance, user_id))
+
+                distances.sort(key=lambda x: x[0])
+
+                best_distance, best_user_id = distances[0]
+                second_distance = distances[1][0] if len(distances) > 1 else None
+
+                final_distance = best_distance
+                final_user_id = best_user_id
+                gap_ok = second_distance is None or (second_distance - best_distance) > SECOND_GAP
+                final_match = best_distance is not None and best_distance < THRESHOLD and gap_ok
+
+                print("\n[Konst] 🔍 Verification result (gallery)")
+                print("---------------------------")
+                print(f"Best match user: {best_user_id}")
+                print(f"Distance: {best_distance:.4f}" if best_distance is not None else "Distance: None")
+                if second_distance is not None:
+                    print(f"2nd-best distance: {second_distance:.4f} (needs gap > {SECOND_GAP:.4f})")
+                print(f"Match:    {final_match}")
+
+                if final_match:
                     print("---------------------------")
-                    print(f"Distance: {distance:.4f}")
-                    print(f"Match:    {is_match}")
-                    if is_match:
-                        print("---------------------------")
-                        print(f"✅ ACCEPT: face matches {USER_ID}")
-                        # Pause rPPG and verification processing
-                        phase = 0
-                    else:
-                        print("---------------------------")
-                        print(f"❌ REJECT: face does NOT match {USER_ID}")
-                        if MODE == "phone":
-                            print("[Konst] ⏳ Pausing verification for 30 seconds to prevent immediate retries.")
-                            time.sleep(30)  # pause for 30 seconds to avoid immediate retries
-                        phase = 1  # go back to rPPG processing phase
-            else:
-                # nothing aligned yet – optional debug print
-                pass
-        #-----------------------------------------------------------------
+                    print(f"✅ ACCEPT: face matches {best_user_id}")
+                else:
+                    print("---------------------------")
+                    print(f"❌ REJECT: face does NOT match any enrolled user")
 
+                # In both cases, end the process after one decision
+                phase = 0
+        # -------------------------------------------------------------------
+
+        # ESC stops EVERYTHING immediately
         if key == 27:  # Escape key
             print("ESC pressed. Exiting...")
             force_stop(vt, cap)
             break
 
         if phase == 0:
-            print("[rPPG & Konst] ✅ Verification successful. System will close...)")
-            force_stop(vt, cap)
-            break
+            print("\n[rPPG & Konst] 🧾 Process finished. System will close...")
+            if final_distance is not None and final_match is not None:
+                print(f"  • Final distance: {final_distance:.4f}")
+                print(f"  • Final decision: {'ACCEPT' if final_match else 'REJECT'}")
+                if final_user_id is not None:
+                    print(f"  • Matched user: {final_user_id}")
+            vt.stop()  # stop Thread
+            break  # EXIT MAIN LOOP IMMEDIATELY
 
+        # If thread died for any reason
         if not vt.running:
             force_stop(vt, cap)
             break

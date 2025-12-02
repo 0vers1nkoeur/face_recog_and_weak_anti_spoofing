@@ -1,19 +1,31 @@
 import cv2
 import numpy as np
 
+# HOG descriptor configured for square 64x64 inputs. This is far more robust
+# than raw pixels for distinguishing people.
+_HOG = cv2.HOGDescriptor(
+    _winSize=(64, 64),
+    _blockSize=(16, 16),
+    _blockStride=(8, 8),
+    _cellSize=(8, 8),
+    _nbins=9,
+)
+
 
 def get_embedding_from_aligned_face(aligned_face_bgr: np.ndarray) -> np.ndarray | None:
     """
-    Simple, robust 'embedding' without deep learning.
+    Hand-crafted HOG embedding (no deep learning) that is more stable than
+    raw pixels and less sensitive to background.
 
     Steps:
       1. Convert to grayscale
-      2. Resize to 64x64
-      3. Flatten to 1D vector
-      4. L2-normalize
+      2. Detect and crop the largest face region (fallback to full image)
+      3. Resize to 64x64
+      4. Compute HOG descriptor
+      5. L2-normalize feature vector
 
     Returns:
-        1D float32 numpy array of length 4096, or None if image is invalid.
+        1D float32 numpy array, or None if image is invalid.
     """
 
     if aligned_face_bgr is None:
@@ -23,11 +35,15 @@ def get_embedding_from_aligned_face(aligned_face_bgr: np.ndarray) -> np.ndarray 
         # 1. BGR -> Gray
         gray = cv2.cvtColor(aligned_face_bgr, cv2.COLOR_BGR2GRAY)
 
-        # 2. Resize to fixed size
+        # 2. Resize to fixed size (use the aligned crop directly to avoid double-cropping jitter)
         resized = cv2.resize(gray, (64, 64))  # shape (64, 64)
 
-        # 3. Flatten
-        vec = resized.astype("float32").reshape(-1)  # shape (4096,)
+        # 3. HOG descriptor -> vector
+        hog_vec = _HOG.compute(resized)
+        if hog_vec is None:
+            return None
+
+        vec = hog_vec.reshape(-1).astype("float32")
 
         # 4. Normalize (so brightness changes don't explode distances)
         norm = np.linalg.norm(vec) + 1e-8
@@ -43,7 +59,7 @@ def get_embedding_from_aligned_face(aligned_face_bgr: np.ndarray) -> np.ndarray 
 def compare_embeddings(
     embedding_live: np.ndarray,
     embedding_ref: np.ndarray,
-    threshold: float = 0.2,
+    threshold: float = 0.16,
 ) -> tuple[float, bool]:
     """
     Compare two embeddings using cosine similarity turned into a 'distance'.
@@ -62,6 +78,13 @@ def compare_embeddings(
     # Ensure 1D float vectors
     e1 = embedding_live.astype("float32").ravel()
     e2 = embedding_ref.astype("float32").ravel()
+
+    if e1.shape != e2.shape:
+        print(
+            f"[compare_embeddings] ⚠️ Embedding shape mismatch: {e1.shape} vs {e2.shape}. "
+            "Regenerate stored embeddings with the current pipeline."
+        )
+        return float("inf"), False
 
     # Cosine similarity
     dot = float(np.dot(e1, e2))
