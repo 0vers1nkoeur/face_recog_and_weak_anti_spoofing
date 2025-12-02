@@ -25,7 +25,7 @@ def ensure_mediapipe_env():
 
 ensure_mediapipe_env()
 
-#For easy close of camera, GUI and thread (IF YOU ARE GOING TO STOP CAMERA OR PROGRAM IN ANY PLEASE USE THIS!!!)
+#For easy close of camera, GUI **AND** thread (IF YOU ARE GOING TO STOP CAMERA OR PROGRAM IN ANY PLEASE USE THIS!!!)
 def force_stop(vt, cap):
     try:
         cap.release()
@@ -53,7 +53,6 @@ def force_stop(vt, cap):
     except:
         pass
 
-
 def main():
 
     # Konstantinos: load reference embedding once
@@ -78,17 +77,16 @@ def main():
         snr_thresh_db=10.0,
         roi_landmark_sets=RPPG.CHEEKS + RPPG.FOREHEAD
     )
-    plotter = SignalPlotter(rppg, stop_callback=vt.stop)
+    plotter = SignalPlotter(rppg)
 
-    debug = True
-    debug_rois_enabled = False  # toggled via touche clavier
+    debug_rois_enabled = False  # toggled via 'r' key
     counter = 0
     is_live = False  # default liveness state
     liveness_list = []
     phase = 1  # phase
     aligned = None  # last aligned face for verification
     counter_before_stop = 15  # Time to wait before blocking after several failed attempts
-
+    
     print("VisionThread started.")
 
     # ------------------------------------------------
@@ -103,6 +101,9 @@ def main():
     cv2.namedWindow("Vision & Detection", cv2.WINDOW_NORMAL)
 
     while True:
+
+        # Key for interactions
+        key = cv2.waitKey(1) & 0xFF
 
         # Read frame from camera
         ret, frame = cap.read()
@@ -224,48 +225,52 @@ def main():
             if vt.last_frame is not None and vt.last_coords is not None:
                 rppg.update_buffer(vt.last_frame, vt.last_coords)
 
-                if False:  # Set to True to enable debug plots every 5 frames
-                    for idx, (name, roi) in enumerate(rppg.last_rois.items()):
-                        if roi is not None:
-                            win_name = f"{name} ROI"
-                            cv2.imshow(win_name, roi)
-                            cv2.moveWindow(win_name, 40 + idx * (roi.shape[1] + 40), 40)
+                # Every frames per second...
+                if counter % rppg.fps == 0:
 
-                # Every 30 frames...
-                if counter % 30 == 0:
-
-                    if debug:
+                    if debug_rois_enabled :
+                        for idx, (name, roi) in enumerate(rppg.last_rois.items()):
+                            if roi is not None:
+                                win_name = f"{name} ROI"
+                                cv2.imshow(win_name, roi)
+                    
+                    if plotter.hidden == False : 
                         plotter.plot_signals()
-                        plt.pause(0.001)
 
                     if len(rppg.signal_buffer) == rppg.buffer_size:
                         # Compute liveness
                         bpm, snr, is_live = rppg.compute_liveness()
+
+                        # Handle case of not enough signal
                         if bpm is None and snr is None and is_live is False:
-                            if debug:
-                                print("[rPPG] Not enough signal for liveness computation.\n")
+                            print("[rPPG] Not enough signal for liveness computation.\n")
                             continue
+                        # Update liveness list
                         elif len(liveness_list) >= SIZELIST:
                             liveness_list.pop(0)    # keep list size manageable by removing oldest entry
                         liveness_list.append(is_live)
 
-                        if debug:
-                            print("\n[rPPG]--------------------------------------------------------\n"
-                                  "liveness_list:", liveness_list,
-                                  f"\nCurrent BPM: {bpm}, SNR: {snr} dB, Liveness: {is_live}\n"
-                                  "-----------------------------------------------------------------\n")
+                        # Print current status in stdout
+                        print("\n[rPPG]--------------------------------------------------------\n"
+                              "liveness_list:", liveness_list,
+                              f"\nCurrent BPM: {bpm}, SNR: {snr} dB, Liveness: {is_live}\n"
+                              "-----------------------------------------------------------------\n")
 
+                        # Final decision after collecting enough liveness results
                         if len(liveness_list) == SIZELIST:
                             print("[rPPG] Liveness results collected. Making final decision... Number of attempts left before stop:",
                                   counter_before_stop)
                             counter_before_stop -= 1
 
                             # Final decision based on majority in liveness_list or timeout
+
+                            # --- REJECTED AS SPOOF ---
                             if counter_before_stop == 0:
                                 print("\n[rPPG] ❌ Too many failed liveness attempts. Stopping the process...\n")
 
                                 force_stop(vt, cap)
                                 break
+                            # --- ACCEPTED AS LIVE ---
                             elif liveness_list.count(True) > SIZELIST / 2:
                                 print("\n[rPPG] ✅ Liveness confirmed by rPPG.\n")
 
@@ -284,20 +289,17 @@ def main():
                                 phase = 2  # go to verification phase
 
             elif vt.last_coords is None:
-                if counter % 30 == 0:
+                if counter % rppg.fps == 0:
                     print('No face detected, clearing rPPG buffers...\n')
                 rppg.signal_buffer = []  # reset buffer if no face detected
                 rppg.filtered_signal_buffer = []  # reset filtered buffer if no face detected
-                
-                plt.pause(0.001)
                 continue
             else:
-                if counter % 30 == 0:
+                if counter % rppg.fps == 0:
                     print('No frame available...\n')
                 continue
         #------------------------------------------------------------------
 
-        key = cv2.waitKey(1) & 0xFF
         if key == ord('r'):
             debug_rois_enabled = not debug_rois_enabled
             state = "ON" if debug_rois_enabled else "OFF"
@@ -306,6 +308,15 @@ def main():
                 # Hide all ROI debug windows
                 for name in rppg.last_rois:
                     cv2.destroyWindow(f"{name} ROI")
+
+        # Hide/show rPPG plotter with 'h' key
+        if key == ord('h'):
+            if plotter.hidden:
+                plotter.show()
+                print("[rPPG] Signal plotter shown.")
+            else:
+                plotter.hide()
+                print("[rPPG] Signal plotter hidden.")
 
         #---------------------- KONSTANTINOS (VERIFICATION) ---------------
 

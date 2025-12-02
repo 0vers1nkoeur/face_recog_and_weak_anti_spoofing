@@ -7,10 +7,10 @@ from datetime import datetime
 plt.rcParams["keymap.save"] = []
 
 class SignalPlotter:
-    def __init__(self, rppg, stop_callback=None):
+    def __init__(self, rppg):
         self.rppg = rppg
-        self.stop_callback = stop_callback
         self._save_dir = Path("data") / "plots"
+        self.hidden = True
 
     def plot_signal_buffer(self):
         t = np.arange(len(self.rppg.signal_buffer)) / self.rppg.fps
@@ -99,11 +99,14 @@ class SignalPlotter:
                 path = self._save_dir / f"rppg_{ts}.png"
                 fig.savefig(path)
                 print(f"[rPPG] Figure saved: {path}")
-            elif event.key in ("escape", "esc"):
-                if self.stop_callback:
-                    print("[rPPG] Stop requested via 'Esc' on the figure.")
-                    self.stop_callback()
-                plt.close('all')
 
         fig.canvas.mpl_connect("key_press_event", _handler)
         fig._save_shortcut_attached = True
+    
+    def hide(self):
+        plt.close("rPPG signals (raw + filtered)")
+        self.hidden = True
+    
+    def show(self):
+        self.plot_signals()
+        self.hidden = False
