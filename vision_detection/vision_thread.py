@@ -109,4 +109,3 @@ class VisionThread(threading.Thread):
             self.last_fps = int(self.fps_meter.tick())
 
         print("Camera thread stopped")
-        cv2.destroyAllWindows()
