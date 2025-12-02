@@ -23,6 +23,7 @@ THRESHOLD = 0.195                           # distance threshold for accept / re
 LIVE_EMB_COUNT = 10                         # number of live embeddings to collect for a stable decision
 SECOND_GAP = 0.05                           # require best user to beat 2nd-best by this margin
 RPPG_SKIP = False                           # default: run rPPG; set via CLI flag to skip
+SRR_MIN = 0.20                    # minimum reliability score to accept (tune via identification_eval.py)
 
 
 def ensure_venv():
@@ -80,6 +81,18 @@ def canonical_user_id(fname: str) -> str:
     if len(parts) == 2 and parts[1].isdigit():
         return parts[0]
     return base
+
+
+def reliability_srr(d1: float, d2: float) -> float:
+    """
+    Relative gap between best and second-best distances. Higher => more reliable.
+    If only one identity exists (no second distance), treat as fully reliable.
+    """
+    if d2 is None:
+        return 1.0
+    if d1 is None or d2 <= d1:
+        return 0.0
+    return max(0.0, min(1.0, (d2 - d1) / (d2 + d1 + 1e-8)))
 
 
 #For easy close of camera, GUI **AND** thread (IF YOU ARE GOING TO STOP CAMERA OR PROGRAM IN ANY PLEASE USE THIS!!!)
@@ -490,11 +503,17 @@ def main():
 
                 best_distance, best_user_id = distances[0]
                 second_distance = distances[1][0] if len(distances) > 1 else None
+                srr = reliability_srr(best_distance, second_distance)
 
                 final_distance = best_distance
                 final_user_id = best_user_id
                 gap_ok = second_distance is None or (second_distance - best_distance) > SECOND_GAP
-                final_match = best_distance is not None and best_distance < THRESHOLD and gap_ok
+                final_match = (
+                    best_distance is not None
+                    and best_distance < THRESHOLD
+                    and gap_ok
+                    and srr >= SRR_MIN
+                )
 
                 print("\n[Konst] 🔍 Verification result (gallery)")
                 print("---------------------------")
@@ -502,6 +521,7 @@ def main():
                 print(f"Distance: {best_distance:.4f}" if best_distance is not None else "Distance: None")
                 if second_distance is not None:
                     print(f"2nd-best distance: {second_distance:.4f} (needs gap > {SECOND_GAP:.4f})")
+                print(f"SRR: {srr:.3f} (needs >= {SRR_MIN:.3f})")
                 print(f"Match:    {final_match}")
 
                 if final_match:
