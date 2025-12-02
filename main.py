@@ -370,7 +370,7 @@ def main():
                                 )
                                 print("[rPPG] ▶ Saving last aligned face for verification to:", aligned_path)
 
-                                aligned = align_and_crop(
+                                _ = align_and_crop(
                                     frame_bgr=vt.last_frame,
                                     coords=vt.last_coords,
                                     crop_size=224,
@@ -423,12 +423,6 @@ def main():
 
 
             # Collect multiple live embeddings, then decide
-            if aligned is not None and not live_embeddings:
-                emb0 = get_embedding_from_aligned_face(aligned)
-                if emb0 is not None:
-                    live_embeddings.append(emb0)
-                    print(f"[Konst] ▶ Collected live embedding 1/{LIVE_EMB_COUNT}")
-
             if vt.last_frame is not None and vt.last_coords is not None and len(live_embeddings) < LIVE_EMB_COUNT:
                 aligned_live = align_and_crop(
                     frame_bgr=vt.last_frame,
