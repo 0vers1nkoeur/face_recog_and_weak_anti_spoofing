@@ -262,7 +262,8 @@ def main():
         cv2.putText(
             frame,
             f"FPS: {vt.last_fps}",
-            (20, 85),  # pomjereno ispod headera
+            # Down right corner
+            (frame.shape[1] - 120, frame.shape[0] - 20),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.7,
             (255, 255, 255),
