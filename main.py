@@ -6,6 +6,8 @@ import os
 import sys
 from pathlib import Path
 import numpy as np
+import matplotlib.pyplot as plt
+from PIL import Image, ImageOps
 
 # Custom imports
 from vision_detection.vision_thread import VisionThread
@@ -19,11 +21,54 @@ SIZELIST = 10                               # size of the list of liveness for t
 PREVIEW_DIR = "data/verification"           # live captures (what rPPG saves)
 REF_DIR = "data/Enrolled"                   # enrolled users (reference faces)
 REF_ALIGNED_DIR = "data/Enrolled_aligned"   # debug: aligned crops of enrolled faces
-THRESHOLD = 0.195                           # distance threshold for accept / reject (HOG space)
+THRESHOLD = 0.15                            # distance threshold for accept / reject (tight: your ~0.16 passes, others ~0.17+ fail)
 LIVE_EMB_COUNT = 10                         # number of live embeddings to collect for a stable decision
-SECOND_GAP = 0.05                           # require best user to beat 2nd-best by this margin
+SECOND_GAP = 0.010                          # require best user to beat 2nd-best by this margin (your gap ~0.012)
 RPPG_SKIP = False                           # default: run rPPG; set via CLI flag to skip
-SRR_MIN = 0.20                    # minimum reliability score to accept (tune via identification_eval.py)
+SRR_MIN = 0.01                    # minimum reliability score to accept (very permissive, distance is primary)
+ALIGN_CROP_SIZE = 320             # aligned face crop size (pixels)
+ALIGN_BBOX_SCALE = 2.0            # expand around bbox to keep forehead/chin/ears
+ALIGN_ROTATE = False              # disable rotation to keep full face (enroll/live consistent)
+
+
+def summarize_enrollment_distances(enrolled_embeddings):
+    """
+    Debug helper: show how far same-user and different-user templates are.
+    Use this to pick a sensible threshold.
+    """
+    intra = []
+    inter = []
+    user_ids = list(enrolled_embeddings.keys())
+
+    # same user pairs
+    for uid, embs in enrolled_embeddings.items():
+        for i in range(len(embs)):
+            for j in range(i + 1, len(embs)):
+                intra.append(compare_embeddings(embs[i], embs[j], threshold=THRESHOLD)[0])
+
+    # different user pairs
+    for i in range(len(user_ids)):
+        for j in range(i + 1, len(user_ids)):
+            for emb_a in enrolled_embeddings[user_ids[i]]:
+                for emb_b in enrolled_embeddings[user_ids[j]]:
+                    inter.append(compare_embeddings(emb_a, emb_b, threshold=THRESHOLD)[0])
+
+    def stats(arr):
+        if not arr:
+            return "None"
+        a = np.array(arr, dtype=np.float32)
+        return f"min={a.min():.3f}, median={np.median(a):.3f}, 95p={np.percentile(a,95):.3f}"
+
+    if intra or inter:
+        print("[Konst] 📈 Enrollment distance stats (use to tune THRESHOLD):")
+        print(f"       same user: {stats(intra)}")
+        print(f"       diff user: {stats(inter)}")
+        if intra and inter:
+            # a conservative suggestion: halfway between hard same-user (95p) and easy diff-user (5p)
+            suggest = 0.5 * (np.percentile(intra, 95) + np.percentile(inter, 5))
+            print(f"       suggested threshold ~ {suggest:.3f}")
+
+    return {"intra": intra, "inter": inter}
 
 
 def ensure_venv():
@@ -81,6 +126,23 @@ def canonical_user_id(fname: str) -> str:
     if len(parts) == 2 and parts[1].isdigit():
         return parts[0]
     return base
+
+
+def load_image_bgr(path: str):
+    """
+    Load image correcting EXIF orientation to avoid upside-down/sideways faces.
+    Returns BGR numpy array or None.
+    """
+    try:
+        with Image.open(path) as im:
+            im = ImageOps.exif_transpose(im)
+            im = im.convert("RGB")
+            arr = np.array(im)[:, :, ::-1]  # RGB -> BGR for OpenCV
+            return arr
+    except Exception as e:
+        print(f"[Konst] ⚠️ PIL load failed for {path}: {e}. Falling back to cv2.")
+    bgr = cv2.imread(path)
+    return bgr
 
 
 def reliability_srr(d1: float, d2: float) -> float:
@@ -148,7 +210,7 @@ def main():
         user_id = canonical_user_id(fname)   # drop trailing numeric suffix
 
         # IMPORTANT: keep images in BGR here so they match the live `aligned` image
-        ref_bgr = cv2.imread(fpath)
+        ref_bgr = load_image_bgr(fpath)
         if ref_bgr is None:
             print(f"[Konst] ⚠️ Could not read enrolled image: {fpath}")
             continue
@@ -158,7 +220,13 @@ def main():
             print(f"[Konst] ⚠️ No face detected in enrolled image: {fpath}")
             continue
 
-        aligned_ref = align_and_crop(ref_bgr, coords, crop_size=224)
+        aligned_ref = align_and_crop(
+            ref_bgr,
+            coords,
+            crop_size=ALIGN_CROP_SIZE,
+            bbox_scale=ALIGN_BBOX_SCALE,
+            align=ALIGN_ROTATE,
+        )
         if aligned_ref is None:
             print(f"[Konst] ⚠️ Could not align enrolled image: {fpath}")
             continue
@@ -185,6 +253,7 @@ def main():
 
     print(f"[Konst] 📸 Loaded {len(enrolled_embeddings)} enrolled face(s) from {REF_DIR}:")
     print("       ", ", ".join(enrolled_embeddings.keys()))
+    summarize_enrollment_distances(enrolled_embeddings)
 
     # -------- VisionThread (processing only) --------
     vt = VisionThread()
@@ -212,6 +281,7 @@ def main():
     final_distance = None
     final_match = None
     final_user_id = None
+    rejection_reasons = []
 
     print("VisionThread started.")
 
@@ -477,7 +547,9 @@ def main():
                 aligned_live = align_and_crop(
                     frame_bgr=vt.last_frame,
                     coords=vt.last_coords,
-                    crop_size=224,
+                    crop_size=ALIGN_CROP_SIZE,
+                    bbox_scale=ALIGN_BBOX_SCALE,
+                    align=ALIGN_ROTATE,
                 )
                 if aligned_live is not None:
                     emb_live = get_embedding_from_aligned_face(aligned_live)
@@ -507,7 +579,8 @@ def main():
 
                 final_distance = best_distance
                 final_user_id = best_user_id
-                gap_ok = second_distance is None or (second_distance - best_distance) > SECOND_GAP
+                # If SECOND_GAP is 0, skip the gap check entirely
+                gap_ok = SECOND_GAP == 0.0 or second_distance is None or (second_distance - best_distance) > SECOND_GAP
                 final_match = (
                     best_distance is not None
                     and best_distance < THRESHOLD
@@ -528,6 +601,21 @@ def main():
                     print("---------------------------")
                     print(f"✅ ACCEPT: face matches {best_user_id}")
                 else:
+                    # Record rejection reasons
+                    rejection_reasons = []
+                    if best_distance is None or best_distance >= THRESHOLD:
+                        rejection_reasons.append(
+                            f"Distance too high: {best_distance:.4f} >= {THRESHOLD}"
+                        )
+                    if not gap_ok:
+                        gap = second_distance - best_distance if second_distance is not None else 0
+                        rejection_reasons.append(
+                            f"Gap between best and 2nd-best too small: {gap:.4f} <= {SECOND_GAP}"
+                        )
+                    if srr < SRR_MIN:
+                        rejection_reasons.append(
+                            f"Reliability score (SRR) too low: {srr:.3f} < {SRR_MIN:.3f}"
+                        )
                     print("---------------------------")
                     print(f"❌ REJECT: face does NOT match any enrolled user")
 
@@ -548,6 +636,10 @@ def main():
                 print(f"  • Final decision: {'ACCEPT' if final_match else 'REJECT'}")
                 if final_user_id is not None:
                     print(f"  • Matched user: {final_user_id}")
+                if not final_match and rejection_reasons:
+                    print(f"  • Rejection reasons:")
+                    for reason in rejection_reasons:
+                        print(f"    - {reason}")
             vt.stop()  # stop Thread
             break  # EXIT MAIN LOOP IMMEDIATELY
 
