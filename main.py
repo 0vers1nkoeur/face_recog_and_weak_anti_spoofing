@@ -23,20 +23,45 @@ MODE = "phone"                      # "phone" or "laptop"
 THRESHOLD = 0.195                   # distance threshold for accept / reject (HOG space)
 LIVE_EMB_COUNT = 10                 # number of live embeddings to collect for a stable decision
 SECOND_GAP = 0.05                   # require best user to beat 2nd-best by this margin
-RPPG_SKIP = False                  # default: run rPPG; set via CLI flag to skip
+RPPG_SKIP = False                   # default: run rPPG; set via CLI flag to skip
 
 
-def ensure_mediapipe_env():
+def ensure_venv():
     """
-    Relaunches the script with the mediapipe venv interpreter
-    if we are not already inside it.
+    Relaunches the script with a project-local venv interpreter
+    (e.g., mediapipe_env, .venv, venv) if we are not already inside one.
     """
-    venv_python = Path(__file__).parent / "mediapipe_env" / "bin" / "python"
-    if venv_python.exists() and Path(sys.executable).resolve() != venv_python.resolve():
-        os.execv(venv_python, [str(venv_python)] + sys.argv)
+    project_root = Path(__file__).parent
+    venv_pythons = []
+
+    for entry in project_root.iterdir():
+        if not entry.is_dir():
+            continue
+        # POSIX venv layout
+        posix_python = entry / "bin" / "python"
+        # Windows venv layout (defensive: even if not used here)
+        win_python = entry / "Scripts" / "python.exe"
+        if posix_python.exists():
+            venv_pythons.append(posix_python)
+        elif win_python.exists():
+            venv_pythons.append(win_python)
+        else :
+            print(f"[VENV] No python found in {entry}, skipping.")
+
+    # Prefer mediapipe_env if present; otherwise pick the first venv found
+    target_python = None
+    for py in venv_pythons:
+        if py.parent.parent.name == "mediapipe_env":
+            target_python = py
+            break
+    if target_python is None and venv_pythons:
+        target_python = venv_pythons[0]
+
+    if target_python and Path(sys.executable).resolve() != target_python.resolve():
+        os.execv(target_python, [str(target_python)] + sys.argv)
 
 
-    ensure_mediapipe_env()
+ensure_venv()
 
 
 def parse_args():
