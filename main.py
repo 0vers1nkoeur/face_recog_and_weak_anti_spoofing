@@ -15,15 +15,14 @@ from vision_detection.face_alignment import align_and_crop
 from vision_detection.face_detection import FaceMeshDetector
 from rppg.utils import SignalPlotter
 
-SIZELIST = 10                       # size of the list of liveness for the final choice to accept/reject
-PREVIEW_DIR = "data/verification"   # live captures (what rPPG saves)
-REF_DIR = "data/Enrolled"           # enrolled users (reference faces)
+SIZELIST = 10                               # size of the list of liveness for the final choice to accept/reject
+PREVIEW_DIR = "data/verification"           # live captures (what rPPG saves)
+REF_DIR = "data/Enrolled"                   # enrolled users (reference faces)
 REF_ALIGNED_DIR = "data/Enrolled_aligned"   # debug: aligned crops of enrolled faces
-MODE = "phone"                      # "phone" or "laptop"
-THRESHOLD = 0.195                   # distance threshold for accept / reject (HOG space)
-LIVE_EMB_COUNT = 10                 # number of live embeddings to collect for a stable decision
-SECOND_GAP = 0.05                   # require best user to beat 2nd-best by this margin
-RPPG_SKIP = False                   # default: run rPPG; set via CLI flag to skip
+THRESHOLD = 0.195                           # distance threshold for accept / reject (HOG space)
+LIVE_EMB_COUNT = 10                         # number of live embeddings to collect for a stable decision
+SECOND_GAP = 0.05                           # require best user to beat 2nd-best by this margin
+RPPG_SKIP = False                           # default: run rPPG; set via CLI flag to skip
 
 
 def ensure_venv():
@@ -39,7 +38,7 @@ def ensure_venv():
             continue
         # POSIX venv layout
         posix_python = entry / "bin" / "python"
-        # Windows venv layout (defensive: even if not used here)
+        # Windows venv layout
         win_python = entry / "Scripts" / "python.exe"
         if posix_python.exists():
             venv_pythons.append(posix_python)
