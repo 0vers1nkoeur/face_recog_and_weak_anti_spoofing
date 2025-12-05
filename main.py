@@ -1,28 +1,29 @@
+# Standard imports
+import argparse
 from datetime import datetime
-from vision_detection.vision_thread import VisionThread
-from rppg.rppg_class import RPPG
-import time
 import cv2
 import os
 import sys
 from pathlib import Path
 import numpy as np
-import matplotlib.pyplot as plt
 
+# Custom imports
+from vision_detection.vision_thread import VisionThread
+from rppg.rppg_class import RPPG
 from vision_detection.verification import get_embedding_from_aligned_face, compare_embeddings
 from vision_detection.face_alignment import align_and_crop
 from vision_detection.face_detection import FaceMeshDetector
 from rppg.utils import SignalPlotter
 
-SIZELIST = 10                     # size of the list of liveness for the final choice to accept/reject
-PREVIEW_DIR = "data/verification" # live captures (what rPPG saves)
-REF_DIR = "data/Enrolled"         # enrolled users (reference faces)
-REF_ALIGNED_DIR = "data/Enrolled_aligned"  # debug: aligned crops of enrolled faces
-MODE = "phone"                    # "phone" or "laptop"
-THRESHOLD = 0.195                 # distance threshold for accept / reject (HOG space)
-LIVE_EMB_COUNT = 10               # number of live embeddings to collect for a stable decision
-SECOND_GAP = 0.05                 # require best user to beat 2nd-best by this margin
-PHASE_SKIP = True                # for debugging: skip rPPG phase and go directly to verification
+SIZELIST = 10                       # size of the list of liveness for the final choice to accept/reject
+PREVIEW_DIR = "data/verification"   # live captures (what rPPG saves)
+REF_DIR = "data/Enrolled"           # enrolled users (reference faces)
+REF_ALIGNED_DIR = "data/Enrolled_aligned"   # debug: aligned crops of enrolled faces
+MODE = "phone"                      # "phone" or "laptop"
+THRESHOLD = 0.195                   # distance threshold for accept / reject (HOG space)
+LIVE_EMB_COUNT = 10                 # number of live embeddings to collect for a stable decision
+SECOND_GAP = 0.05                   # require best user to beat 2nd-best by this margin
+RPPG_SKIP = False                  # default: run rPPG; set via CLI flag to skip
 
 
 def ensure_mediapipe_env():
@@ -35,7 +36,17 @@ def ensure_mediapipe_env():
         os.execv(venv_python, [str(venv_python)] + sys.argv)
 
 
-ensure_mediapipe_env()
+    ensure_mediapipe_env()
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="Facial recognition + rPPG verification")
+    parser.add_argument(
+        "--rppg-skip",
+        action="store_true",
+        help="Skip rPPG and go directly to verification (default runs full flow)",
+    )
+    return parser.parse_args()
 
 
 def canonical_user_id(fname: str) -> str:
@@ -311,7 +322,7 @@ def main():
         if vt.last_frame is not None:
             counter += 1
             #---------------------- LORENZO (ANTI-SPOOF) -------------------------------
-            if phase == 1 and not PHASE_SKIP :  # rPPG processing phase
+            if phase == 1 and not RPPG_SKIP :  # rPPG processing phase
                 if vt.last_frame is not None and vt.last_coords is not None:
                     rppg.update_buffer(vt.last_frame, vt.last_coords)
 
@@ -414,7 +425,7 @@ def main():
 
             #---------------------- KONSTANTINOS (VERIFICATION) ---------------
 
-            if phase == 2 or PHASE_SKIP:  # verification phase
+            if phase == 2 or RPPG_SKIP:  # verification phase
 
                 print("[Konst] ✅ Liveness confirmed by rPPG, proceeding with verification.")
 
@@ -501,4 +512,6 @@ def main():
 
 
 if __name__ == "__main__":
+    args = parse_args()
+    RPPG_SKIP = args.rppg_skip
     main()
