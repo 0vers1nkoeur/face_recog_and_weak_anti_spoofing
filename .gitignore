@@ -24,3 +24,7 @@ __pycache__/
 *.pyc
 *.pyo
 *.pyd
+
+# Not useful data to store remotely
+data/Enrolled_aligned/
+data/verification/

@@ -22,6 +22,7 @@ MODE = "phone"                    # "phone" or "laptop"
 THRESHOLD = 0.195                 # distance threshold for accept / reject (HOG space)
 LIVE_EMB_COUNT = 10               # number of live embeddings to collect for a stable decision
 SECOND_GAP = 0.05                 # require best user to beat 2nd-best by this margin
+PHASE_SKIP = True                # for debugging: skip rPPG phase and go directly to verification
 
 
 def ensure_mediapipe_env():
@@ -306,189 +307,190 @@ def main():
         # GUI Display
         cv2.imshow("Vision & Detection", frame)
 
-        #---------------------------------------------------------------------------
+        #-------------------------------------------------------------------------------
+        if vt.last_frame is not None:
+            counter += 1
+            #---------------------- LORENZO (ANTI-SPOOF) -------------------------------
+            if phase == 1 and not PHASE_SKIP :  # rPPG processing phase
+                if vt.last_frame is not None and vt.last_coords is not None:
+                    rppg.update_buffer(vt.last_frame, vt.last_coords)
 
-        counter += 1
+                    # Every frames per second...
+                    if counter % rppg.fps == 0:
 
-        #---------------------- LORENZO (ANTI-SPOOF) -------------------------------
-        if phase == 1:  # rPPG processing phase
-            if vt.last_frame is not None and vt.last_coords is not None:
-                rppg.update_buffer(vt.last_frame, vt.last_coords)
+                        if debug_rois_enabled :
+                            for idx, (name, roi) in enumerate(rppg.last_rois.items()):
+                                if roi is not None:
+                                    win_name = f"{name} ROI"
+                                    cv2.imshow(win_name, roi)
+                        
+                        if plotter.hidden == False : 
+                            plotter.plot_signals()
 
-                # Every frames per second...
-                if counter % rppg.fps == 0:
+                        if len(rppg.signal_buffer) == rppg.buffer_size:
+                            # Compute liveness
+                            bpm, snr, is_live = rppg.compute_liveness()
 
-                    if debug_rois_enabled :
-                        for idx, (name, roi) in enumerate(rppg.last_rois.items()):
-                            if roi is not None:
-                                win_name = f"{name} ROI"
-                                cv2.imshow(win_name, roi)
-                    
-                    if plotter.hidden == False : 
-                        plotter.plot_signals()
+                            # Handle case of not enough signal
+                            if bpm is None and snr is None and is_live is False:
+                                print("[rPPG] Not enough signal for liveness computation.\n")
+                                continue
+                            # Update liveness list
+                            elif len(liveness_list) >= SIZELIST:
+                                liveness_list.pop(0)    # keep list size manageable by removing oldest entry
+                            liveness_list.append(is_live)
 
-                    if len(rppg.signal_buffer) == rppg.buffer_size:
-                        # Compute liveness
-                        bpm, snr, is_live = rppg.compute_liveness()
+                            # Print current status in stdout
+                            print("\n[rPPG]--------------------------------------------------------\n"
+                                "liveness_list:", liveness_list,
+                                f"\nCurrent BPM: {bpm}, SNR: {snr} dB, Liveness: {is_live}\n"
+                                "-----------------------------------------------------------------\n")
 
-                        # Handle case of not enough signal
-                        if bpm is None and snr is None and is_live is False:
-                            print("[rPPG] Not enough signal for liveness computation.\n")
-                            continue
-                        # Update liveness list
-                        elif len(liveness_list) >= SIZELIST:
-                            liveness_list.pop(0)    # keep list size manageable by removing oldest entry
-                        liveness_list.append(is_live)
+                            # Final decision after collecting enough liveness results
+                            if len(liveness_list) == SIZELIST:
+                                print("[rPPG] Liveness results collected. Making final decision... Number of attempts left before stop:",
+                                    counter_before_stop)
+                                counter_before_stop -= 1
 
-                        # Print current status in stdout
-                        print("\n[rPPG]--------------------------------------------------------\n"
-                              "liveness_list:", liveness_list,
-                              f"\nCurrent BPM: {bpm}, SNR: {snr} dB, Liveness: {is_live}\n"
-                              "-----------------------------------------------------------------\n")
+                                # Final decision based on majority in liveness_list or timeout
 
-                        # Final decision after collecting enough liveness results
-                        if len(liveness_list) == SIZELIST:
-                            print("[rPPG] Liveness results collected. Making final decision... Number of attempts left before stop:",
-                                  counter_before_stop)
-                            counter_before_stop -= 1
+                                # --- REJECTED AS SPOOF ---
+                                if counter_before_stop == 0:
+                                    print("\n[rPPG] ❌ Too many failed liveness attempts. Stopping the process...\n")
 
-                            # Final decision based on majority in liveness_list or timeout
+                                    force_stop(vt, cap)
+                                    break
+                                # --- ACCEPTED AS LIVE ---
+                                elif liveness_list.count(True) > SIZELIST / 2:
+                                    print("\n[rPPG] ✅ Liveness confirmed by rPPG.\n")
 
-                            # --- REJECTED AS SPOOF ---
-                            if counter_before_stop == 0:
-                                print("\n[rPPG] ❌ Too many failed liveness attempts. Stopping the process...\n")
+                                    # Save last aligned face for verification. File named with datetime
+                                    aligned_path = os.path.join(
+                                        PREVIEW_DIR,
+                                        f"{datetime.now().strftime('%Y%m%d_%H-%M-%S')}.jpg"
+                                    )
+                                    print("[rPPG] ▶ Saving last aligned face for verification to:", aligned_path)
 
-                                force_stop(vt, cap)
-                                break
-                            # --- ACCEPTED AS LIVE ---
-                            elif liveness_list.count(True) > SIZELIST / 2:
-                                print("\n[rPPG] ✅ Liveness confirmed by rPPG.\n")
+                                    _ = align_and_crop(
+                                        frame_bgr=vt.last_frame,
+                                        coords=vt.last_coords,
+                                        crop_size=224,
+                                        save_debug_path=aligned_path,
+                                    )
 
-                                # Save last aligned face for verification. File named with datetime
-                                aligned_path = os.path.join(
-                                    PREVIEW_DIR,
-                                    f"{datetime.now().strftime('%Y%m%d_%H-%M-%S')}.jpg"
-                                )
-                                print("[rPPG] ▶ Saving last aligned face for verification to:", aligned_path)
+                                    phase = 2  # go to verification phase
 
-                                _ = align_and_crop(
-                                    frame_bgr=vt.last_frame,
-                                    coords=vt.last_coords,
-                                    crop_size=224,
-                                    save_debug_path=aligned_path,
-                                )
-
-                                phase = 2  # go to verification phase
-
-            elif vt.last_coords is None:
-                if counter % rppg.fps == 0:
-                    print('No face detected, clearing rPPG buffers...\n')
-                rppg.signal_buffer = []  # reset buffer if no face detected
-                rppg.filtered_signal_buffer = []  # reset filtered buffer if no face detected
-                continue
-            else:
-                if counter % rppg.fps == 0:
-                    print('No frame available...\n')
-                continue
-        # -------------------------------------------------------------------
-
-        if key == ord('r'):
-            debug_rois_enabled = not debug_rois_enabled
-            state = "ON" if debug_rois_enabled else "OFF"
-            print(f"[Debug ROI] {state}")
-            if not debug_rois_enabled:
-                # Hide all ROI debug windows
-                for name in rppg.last_rois:
-                    cv2.destroyWindow(f"{name} ROI")
-
-        # Hide/show rPPG plotter with 'h' key
-        if key == ord('h'):
-            if plotter.hidden:
-                plotter.show()
-                print("[rPPG] Signal plotter shown.")
-            else:
-                plotter.hide()
-                print("[rPPG] Signal plotter hidden.")
-
-        #---------------------- KONSTANTINOS (VERIFICATION) ---------------
-
-        if phase == 2:  # verification phase
-
-            print("[Konst] ✅ Liveness confirmed by rPPG, proceeding with verification.")
-
-
-            # Collect multiple live embeddings, then decide
-            if vt.last_frame is not None and vt.last_coords is not None and len(live_embeddings) < LIVE_EMB_COUNT:
-                aligned_live = align_and_crop(
-                    frame_bgr=vt.last_frame,
-                    coords=vt.last_coords,
-                    crop_size=224,
-                )
-                if aligned_live is not None:
-                    emb_live = get_embedding_from_aligned_face(aligned_live)
-                    if emb_live is not None:
-                        live_embeddings.append(emb_live)
-                        print(f"[Konst] ▶ Collected live embedding {len(live_embeddings)}/{LIVE_EMB_COUNT}")
-
-            if len(live_embeddings) >= LIVE_EMB_COUNT:
-                # For each user, compute per-sample min distance across their templates, then take median across samples
-                distances = []
-                for user_id, ref_emb_list in enrolled_embeddings.items():
-                    per_sample_distances = []
-                    for emb_live in live_embeddings:
-                        dists = [
-                            compare_embeddings(emb_live, emb_ref, threshold=THRESHOLD)[0]
-                            for emb_ref in ref_emb_list
-                        ]
-                        per_sample_distances.append(min(dists))
-                    median_distance = float(np.median(per_sample_distances))
-                    distances.append((median_distance, user_id))
-
-                distances.sort(key=lambda x: x[0])
-
-                best_distance, best_user_id = distances[0]
-                second_distance = distances[1][0] if len(distances) > 1 else None
-
-                final_distance = best_distance
-                final_user_id = best_user_id
-                gap_ok = second_distance is None or (second_distance - best_distance) > SECOND_GAP
-                final_match = best_distance is not None and best_distance < THRESHOLD and gap_ok
-
-                print("\n[Konst] 🔍 Verification result (gallery)")
-                print("---------------------------")
-                print(f"Best match user: {best_user_id}")
-                print(f"Distance: {best_distance:.4f}" if best_distance is not None else "Distance: None")
-                if second_distance is not None:
-                    print(f"2nd-best distance: {second_distance:.4f} (needs gap > {SECOND_GAP:.4f})")
-                print(f"Match:    {final_match}")
-
-                if final_match:
-                    print("---------------------------")
-                    print(f"✅ ACCEPT: face matches {best_user_id}")
+                elif vt.last_coords is None:
+                    if counter % rppg.fps == 0:
+                        print('No face detected, clearing rPPG buffers...\n')
+                    rppg.signal_buffer = []  # reset buffer if no face detected
+                    rppg.filtered_signal_buffer = []  # reset filtered buffer if no face detected
+                    continue
                 else:
+                    if counter % rppg.fps == 0:
+                        print('No frame available...\n')
+                    continue
+
+                # Keyboard interactions for phase 1
+                # Toggle ROI debug windows with 'r' key
+                if key == ord('r') :
+                    debug_rois_enabled = not debug_rois_enabled
+                    state = "ON" if debug_rois_enabled else "OFF"
+                    print(f"[Debug ROI] {state}")
+                    if not debug_rois_enabled:
+                        # Hide all ROI debug windows
+                        for name in rppg.last_rois:
+                            cv2.destroyWindow(f"{name} ROI")
+
+                # Hide/show rPPG plotter with 'h' key
+                if key == ord('h'):
+                    if plotter.hidden:
+                        plotter.show()
+                        print("[rPPG] Signal plotter shown.")
+                    else:
+                        plotter.hide()
+                        print("[rPPG] Signal plotter hidden.")
+            # -------------------------------------------------------------------
+
+            #---------------------- KONSTANTINOS (VERIFICATION) ---------------
+
+            if phase == 2 or PHASE_SKIP:  # verification phase
+
+                print("[Konst] ✅ Liveness confirmed by rPPG, proceeding with verification.")
+
+                # Collect multiple live embeddings, then decide
+                if vt.last_frame is not None and vt.last_coords is not None and len(live_embeddings) < LIVE_EMB_COUNT:
+                    aligned_live = align_and_crop(
+                        frame_bgr=vt.last_frame,
+                        coords=vt.last_coords,
+                        crop_size=224,
+                    )
+                    if aligned_live is not None:
+                        emb_live = get_embedding_from_aligned_face(aligned_live)
+                        if emb_live is not None:
+                            live_embeddings.append(emb_live)
+                            print(f"[Konst] ▶ Collected live embedding {len(live_embeddings)}/{LIVE_EMB_COUNT}")
+
+                if len(live_embeddings) >= LIVE_EMB_COUNT:
+                    # For each user, compute per-sample min distance across their templates, then take median across samples
+                    distances = []
+                    for user_id, ref_emb_list in enrolled_embeddings.items():
+                        per_sample_distances = []
+                        for emb_live in live_embeddings:
+                            dists = [
+                                compare_embeddings(emb_live, emb_ref, threshold=THRESHOLD)[0]
+                                for emb_ref in ref_emb_list
+                            ]
+                            per_sample_distances.append(min(dists))
+                        median_distance = float(np.median(per_sample_distances))
+                        distances.append((median_distance, user_id))
+
+                    distances.sort(key=lambda x: x[0])
+
+                    best_distance, best_user_id = distances[0]
+                    second_distance = distances[1][0] if len(distances) > 1 else None
+
+                    final_distance = best_distance
+                    final_user_id = best_user_id
+                    gap_ok = second_distance is None or (second_distance - best_distance) > SECOND_GAP
+                    final_match = best_distance is not None and best_distance < THRESHOLD and gap_ok
+
+                    print("\n[Konst] 🔍 Verification result (gallery)")
                     print("---------------------------")
-                    print(f"❌ REJECT: face does NOT match any enrolled user")
+                    print(f"Best match user: {best_user_id}")
+                    print(f"Distance: {best_distance:.4f}" if best_distance is not None else "Distance: None")
+                    if second_distance is not None:
+                        print(f"2nd-best distance: {second_distance:.4f} (needs gap > {SECOND_GAP:.4f})")
+                    print(f"Match:    {final_match}")
 
-                # In both cases, end the process after one decision
-                phase = 0
-        # -------------------------------------------------------------------
+                    if final_match:
+                        print("---------------------------")
+                        print(f"✅ ACCEPT: face matches {best_user_id}")
+                    else:
+                        print("---------------------------")
+                        print(f"❌ REJECT: face does NOT match any enrolled user")
 
+                    # In both cases, end the process after one decision
+                    phase = 0
+            # -------------------------------------------------------------------
+
+            if phase == 0:
+                print("\n[rPPG & Konst] 🧾 Process finished. System will close...")
+                if final_distance is not None and final_match is not None:
+                    print(f"  • Final distance: {final_distance:.4f}")
+                    print(f"  • Final decision: {'ACCEPT' if final_match else 'REJECT'}")
+                    if final_user_id is not None:
+                        print(f"  • Matched user: {final_user_id}")
+                vt.stop()  # stop Thread
+                break  # EXIT MAIN LOOP IMMEDIATELY
+
+        
         # ESC stops EVERYTHING immediately
         if key == 27:  # Escape key
             print("ESC pressed. Exiting...")
             force_stop(vt, cap)
             break
-
-        if phase == 0:
-            print("\n[rPPG & Konst] 🧾 Process finished. System will close...")
-            if final_distance is not None and final_match is not None:
-                print(f"  • Final distance: {final_distance:.4f}")
-                print(f"  • Final decision: {'ACCEPT' if final_match else 'REJECT'}")
-                if final_user_id is not None:
-                    print(f"  • Matched user: {final_user_id}")
-            vt.stop()  # stop Thread
-            break  # EXIT MAIN LOOP IMMEDIATELY
-
+            
         # If thread died for any reason
         if not vt.running:
             force_stop(vt, cap)
