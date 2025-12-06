@@ -38,33 +38,63 @@ def rotate_image_about_point(image, center_xy: Tuple[float, float], angle_deg: f
 def align_and_crop(
     frame_bgr,
     coords: List[Tuple[int, int]],
-    crop_size: int = 224,
+    crop_size: int = 320,
     save_debug_path: Optional[str] = None,
+    bbox_scale: float = 1.6,
+    align: bool = True,
 ):
     #Finding centers of eyes
     (lx, ly), (rx, ry) = compute_eye_centers(coords)
 
-    #We are calculating diference in height and in horizontal pose between two centers
-    #Than we need to calcuate angle between eyes and we do it by using their diferences
-    dy, dx = (ry - ly), (rx - lx)
-    angle_deg = math.degrees(math.atan2(dy, dx)) 
+    rotated = frame_bgr
+    if align:
+        #We are calculating diference in height and in horizontal pose between two centers
+        #Than we need to calcuate angle between eyes and we do it by using their diferences
+        dy, dx = (ry - ly), (rx - lx)
+        angle_deg = math.degrees(math.atan2(dy, dx)) 
 
-    #Now we are trying to find center between two eyes
-    #And then we roatet aorund it
-    cx, cy = (lx + rx) * 0.5, (ly + ry) * 0.5
-    rotated = rotate_image_about_point(frame_bgr, (cx, cy), angle_deg)
+        #Now we are trying to find center between two eyes
+        #And then we roatet aorund it
+        cx, cy = (lx + rx) * 0.5, (ly + ry) * 0.5
+        rotated = rotate_image_about_point(frame_bgr, (cx, cy), angle_deg)
 
-    #After aligment we need to cropp the face!
-    #Center will againg be the center between eyes
-    #We need to find a top left pixel of cropp space and it will be x1, y1 and bottom right and it will be x2, y2
-    half = crop_size // 2
-    x1, y1 = int(cx) - half, int(cy) - half
-    x2, y2 = x1 + crop_size, y1 + crop_size
+    # Use the face bbox as the crop center so we keep the whole head, not only the eyes.
+    xs = [x for x, _ in coords]
+    ys = [y for _, y in coords]
+    min_x, max_x = min(xs), max(xs)
+    min_y, max_y = min(ys), max(ys)
+    bbox_w = max_x - min_x
+    bbox_h = max_y - min_y
+    face_size = max(bbox_w, bbox_h)
 
-    #We can't allow to corpp something that dosen't exist or that is outisde of camera
+    # Expand the box to keep forehead/chin and a bit of background for stability.
+    side = max(crop_size, int(face_size * bbox_scale))
+    half = side // 2
+    center_x = (min_x + max_x) * 0.5
+    center_y = (min_y + max_y) * 0.5
+
+    x1, y1 = int(center_x) - half, int(center_y) - half
+    x2, y2 = x1 + side, y1 + side
+
+    # If the crop falls outside the frame, pad the image instead of failing.
     h, w = rotated.shape[:2]        #We are taking only height and width of rotated picture (if we have put :3 we would also take color)
-    if x1 < 0 or y1 < 0 or x2 > w or y2 > h:
-        return None
+    pad_left = max(0, -x1)
+    pad_top = max(0, -y1)
+    pad_right = max(0, x2 - w)
+    pad_bottom = max(0, y2 - h)
+    if pad_left or pad_top or pad_right or pad_bottom:
+        rotated = cv2.copyMakeBorder(
+            rotated,
+            pad_top,
+            pad_bottom,
+            pad_left,
+            pad_right,
+            borderType=cv2.BORDER_REFLECT_101,
+        )
+        x1 += pad_left
+        x2 += pad_left
+        y1 += pad_top
+        y2 += pad_top
 
     #Finaly we are taking cropped picture
     #We used .copy in order to not lose original picture (just in case Lorenzo and Konstantions want to use it later)
