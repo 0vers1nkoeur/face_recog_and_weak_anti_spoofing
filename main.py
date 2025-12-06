@@ -5,6 +5,7 @@ import cv2
 import os
 import sys
 from pathlib import Path
+from typing import Optional
 import numpy as np
 import matplotlib.pyplot as plt
 from PIL import Image, ImageOps
@@ -145,7 +146,7 @@ def load_image_bgr(path: str):
     return bgr
 
 
-def reliability_srr(d1: float, d2: float) -> float:
+def reliability_srr(d1: Optional[float], d2: Optional[float]) -> float:
     """
     Relative gap between best and second-best distances. Higher => more reliable.
     If only one identity exists (no second distance), treat as fully reliable.
