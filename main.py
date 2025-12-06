@@ -71,45 +71,6 @@ def summarize_enrollment_distances(enrolled_embeddings):
 
     return {"intra": intra, "inter": inter}
 
-
-def ensure_venv():
-    """
-    Relaunches the script with a project-local venv interpreter
-    (e.g., mediapipe_env, .venv, venv) if we are not already inside one.
-    """
-    project_root = Path(__file__).parent
-    venv_pythons = []
-
-    for entry in project_root.iterdir():
-        if not entry.is_dir():
-            continue
-        # POSIX venv layout
-        posix_python = entry / "bin" / "python"
-        # Windows venv layout
-        win_python = entry / "Scripts" / "python.exe"
-        if posix_python.exists():
-            venv_pythons.append(posix_python)
-        elif win_python.exists():
-            venv_pythons.append(win_python)
-        else :
-            print(f"[VENV] No python found in {entry}, skipping.")
-
-    # Prefer mediapipe_env if present; otherwise pick the first venv found
-    target_python = None
-    for py in venv_pythons:
-        if py.parent.parent.name == "mediapipe_env":
-            target_python = py
-            break
-    if target_python is None and venv_pythons:
-        target_python = venv_pythons[0]
-
-    if target_python and Path(sys.executable).resolve() != target_python.resolve():
-        os.execv(target_python, [str(target_python)] + sys.argv)
-
-
-ensure_venv()
-
-
 def parse_args():
     parser = argparse.ArgumentParser(description="Facial recognition + rPPG verification")
     parser.add_argument(
@@ -119,7 +80,6 @@ def parse_args():
     )
     return parser.parse_args()
 
-
 def canonical_user_id(fname: str) -> str:
     """Drop a trailing numeric suffix to group multiple samples of the same user."""
     base = os.path.splitext(fname)[0]
@@ -127,7 +87,6 @@ def canonical_user_id(fname: str) -> str:
     if len(parts) == 2 and parts[1].isdigit():
         return parts[0]
     return base
-
 
 def load_image_bgr(path: str):
     """
@@ -145,7 +104,6 @@ def load_image_bgr(path: str):
     bgr = cv2.imread(path)
     return bgr
 
-
 def reliability_srr(d1: Optional[float], d2: Optional[float]) -> float:
     """
     Relative gap between best and second-best distances. Higher => more reliable.
@@ -156,7 +114,6 @@ def reliability_srr(d1: Optional[float], d2: Optional[float]) -> float:
     if d1 is None or d2 <= d1:
         return 0.0
     return max(0.0, min(1.0, (d2 - d1) / (d2 + d1 + 1e-8)))
-
 
 #For easy close of camera, GUI **AND** thread (IF YOU ARE GOING TO STOP CAMERA OR PROGRAM IN ANY PLEASE USE THIS!!!)
 def force_stop(vt, cap):
@@ -275,7 +232,6 @@ def main():
     is_live = False             # default liveness state
     liveness_list = []
     phase = 1                   # 1 = rPPG, 2 = verification, 0 = finished
-    aligned = None              # last aligned face for verification
     live_embeddings = []        # collect multiple live embeddings for averaging
     counter_before_stop = 15    # attempts before blocking after several failed tries
 
@@ -283,6 +239,7 @@ def main():
     final_match = None
     final_user_id = None
     rejection_reasons = []
+    first_round_phase2 = True
 
     print("VisionThread started.")
 
@@ -534,113 +491,113 @@ def main():
             #---------------------- KONSTANTINOS (VERIFICATION) ---------------
 
             if phase == 2 or RPPG_SKIP:  # verification phase
+                if first_round_phase2:
+                    print("[Konst] ✅ Liveness confirmed by rPPG, proceeding with verification.")
 
-            print("[Konst] ✅ Liveness confirmed by rPPG, proceeding with verification.")
+                if vt.last_frame is not None and vt.last_coords is not None and len(live_embeddings) < LIVE_EMB_COUNT:
+                    if first_round_phase2 : print('[Konst] ▶ Collecting live embeddings for verification...')
+                    aligned_live = align_and_crop(
+                        frame_bgr=vt.last_frame,
+                        coords=vt.last_coords,
+                        crop_size=ALIGN_CROP_SIZE,
+                        bbox_scale=ALIGN_BBOX_SCALE,
+                        align=ALIGN_ROTATE,
+                    )
 
-            # Collect multiple live embeddings, then decide
-            if aligned is not None and not live_embeddings:
-                emb0 = get_embedding_from_aligned_face(aligned)
-                if emb0 is not None:
-                    live_embeddings.append(emb0)
-                    print(f"[Konst] ▶ Collected live embedding 1/{LIVE_EMB_COUNT}")
+                    if aligned_live is not None:
+                        emb_live = get_embedding_from_aligned_face(aligned_live)
+                        if emb_live is not None:
+                            live_embeddings.append(emb_live)
+                            print(f"[Konst] ▶ Collected live embedding {len(live_embeddings)}/{LIVE_EMB_COUNT}")
+                    
+                    first_round_phase2 = False
+    
+                if len(live_embeddings) >= LIVE_EMB_COUNT:
+                    print("[Konst] ▶ Collected sufficient live embeddings, performing verification against enrolled gallery...")
+                    # For each user, compute per-sample min distance across their templates, then take median across samples
+                    distances = []
+                    for user_id, ref_emb_list in enrolled_embeddings.items():
+                        per_sample_distances = []
+                        for emb_live in live_embeddings:
+                            dists = [
+                                compare_embeddings(emb_live, emb_ref, threshold=THRESHOLD)[0]
+                                for emb_ref in ref_emb_list
+                            ]
+                            per_sample_distances.append(min(dists))
+                        median_distance = float(np.median(per_sample_distances))
+                        distances.append((median_distance, user_id))
 
-            if vt.last_frame is not None and vt.last_coords is not None and len(live_embeddings) < LIVE_EMB_COUNT:
-                aligned_live = align_and_crop(
-                    frame_bgr=vt.last_frame,
-                    coords=vt.last_coords,
-                    crop_size=ALIGN_CROP_SIZE,
-                    bbox_scale=ALIGN_BBOX_SCALE,
-                    align=ALIGN_ROTATE,
-                )
-                if aligned_live is not None:
-                    emb_live = get_embedding_from_aligned_face(aligned_live)
-                    if emb_live is not None:
-                        live_embeddings.append(emb_live)
-                        print(f"[Konst] ▶ Collected live embedding {len(live_embeddings)}/{LIVE_EMB_COUNT}")
+                    distances.sort(key=lambda x: x[0])
 
-            if len(live_embeddings) >= LIVE_EMB_COUNT:
-                # For each user, compute per-sample min distance across their templates, then take median across samples
-                distances = []
-                for user_id, ref_emb_list in enrolled_embeddings.items():
-                    per_sample_distances = []
-                    for emb_live in live_embeddings:
-                        dists = [
-                            compare_embeddings(emb_live, emb_ref, threshold=THRESHOLD)[0]
-                            for emb_ref in ref_emb_list
-                        ]
-                        per_sample_distances.append(min(dists))
-                    median_distance = float(np.median(per_sample_distances))
-                    distances.append((median_distance, user_id))
+                    best_distance, best_user_id = distances[0]
+                    second_distance = distances[1][0] if len(distances) > 1 else None
+                    srr = reliability_srr(best_distance, second_distance)
 
-                distances.sort(key=lambda x: x[0])
+                    final_distance = best_distance
+                    final_user_id = best_user_id
+                    # If SECOND_GAP is 0, skip the gap check entirely
+                    gap_ok = SECOND_GAP == 0.0 or second_distance is None or (second_distance - best_distance) > SECOND_GAP
+                    final_match = (
+                        best_distance is not None
+                        and best_distance < THRESHOLD
+                        and gap_ok
+                        and srr >= SRR_MIN
+                    )
 
-                best_distance, best_user_id = distances[0]
-                second_distance = distances[1][0] if len(distances) > 1 else None
-                srr = reliability_srr(best_distance, second_distance)
-
-                final_distance = best_distance
-                final_user_id = best_user_id
-                # If SECOND_GAP is 0, skip the gap check entirely
-                gap_ok = SECOND_GAP == 0.0 or second_distance is None or (second_distance - best_distance) > SECOND_GAP
-                final_match = (
-                    best_distance is not None
-                    and best_distance < THRESHOLD
-                    and gap_ok
-                    and srr >= SRR_MIN
-                )
-
-                print("\n[Konst] 🔍 Verification result (gallery)")
-                print("---------------------------")
-                print(f"Best match user: {best_user_id}")
-                print(f"Distance: {best_distance:.4f}" if best_distance is not None else "Distance: None")
-                if second_distance is not None:
-                    print(f"2nd-best distance: {second_distance:.4f} (needs gap > {SECOND_GAP:.4f})")
-                print(f"SRR: {srr:.3f} (needs >= {SRR_MIN:.3f})")
-                print(f"Match:    {final_match}")
-
-                if final_match:
+                    print("\n[Konst] 🔍 Verification result (gallery)")
                     print("---------------------------")
-                    print(f"✅ ACCEPT: face matches {best_user_id}")
-                else:
-                    # Record rejection reasons
-                    rejection_reasons = []
-                    if best_distance is None or best_distance >= THRESHOLD:
-                        rejection_reasons.append(
-                            f"Distance too high: {best_distance:.4f} >= {THRESHOLD}"
-                        )
-                    if not gap_ok:
-                        gap = second_distance - best_distance if second_distance is not None else 0
-                        rejection_reasons.append(
-                            f"Gap between best and 2nd-best too small: {gap:.4f} <= {SECOND_GAP}"
-                        )
-                    if srr < SRR_MIN:
-                        rejection_reasons.append(
-                            f"Reliability score (SRR) too low: {srr:.3f} < {SRR_MIN:.3f}"
-                        )
-                    print("---------------------------")
-                    print(f"❌ REJECT: face does NOT match any enrolled user")
+                    print(f"Best match user: {best_user_id}")
+                    print(f"Distance: {best_distance:.4f}" if best_distance is not None else "Distance: None")
+                    if second_distance is not None:
+                        print(f"2nd-best distance: {second_distance:.4f} (needs gap > {SECOND_GAP:.4f})")
+                    print(f"SRR: {srr:.3f} (needs >= {SRR_MIN:.3f})")
+                    print(f"Match:    {final_match}")
 
-                # In both cases, end the process after one decision
-                phase = 0
-        # -------------------------------------------------------------------
+                    if final_match:
+                        print("---------------------------")
+                        print(f"✅ ACCEPT: face matches {best_user_id}")
+                    else:
+                        # Record rejection reasons
+                        rejection_reasons = []
+                        if best_distance is None or best_distance >= THRESHOLD:
+                            rejection_reasons.append(
+                                f"Distance too high: {best_distance:.4f} >= {THRESHOLD}"
+                            )
+                        if not gap_ok:
+                            gap = second_distance - best_distance if second_distance is not None else 0
+                            rejection_reasons.append(
+                                f"Gap between best and 2nd-best too small: {gap:.4f} <= {SECOND_GAP}"
+                            )
+                        if srr < SRR_MIN:
+                            rejection_reasons.append(
+                                f"Reliability score (SRR) too low: {srr:.3f} < {SRR_MIN:.3f}"
+                            )
+                        print("---------------------------")
+                        print(f"❌ REJECT: face does NOT match any enrolled user")
+
+                    # In both cases, end the process after one decision
+                    phase = 0
+            # -------------------------------------------------------------------
+
+            if phase == 0:
+                print("\n[rPPG & Konst] 🧾 Process finished. System will close...")
+                if final_distance is not None and final_match is not None:
+                    print(f"  • Final distance: {final_distance:.4f}")
+                    print(f"  • Final decision: {'ACCEPT' if final_match else 'REJECT'}")
+                    if final_user_id is not None:
+                        print(f"  • Matched user: {final_user_id}")
+                    if not final_match and rejection_reasons:
+                        print(f"  • Rejection reasons:")
+                        for reason in rejection_reasons:
+                            print(f"    - {reason}")
+                vt.stop()  # stop Thread
+                break  # EXIT MAIN LOOP IMMEDIATELY
+        
+        # END OF FRAME PROCESSING --------------------------------
 
         # ESC stops EVERYTHING immediately
         if key == 27:  # Escape key
             print("ESC pressed. Exiting...")
-            vt.stop()  # stop Thread
-            break  # EXIT MAIN LOOP IMMEDIATELY
-
-        if phase == 0:
-            print("\n[rPPG & Konst] 🧾 Process finished. System will close...")
-            if final_distance is not None and final_match is not None:
-                print(f"  • Final distance: {final_distance:.4f}")
-                print(f"  • Final decision: {'ACCEPT' if final_match else 'REJECT'}")
-                if final_user_id is not None:
-                    print(f"  • Matched user: {final_user_id}")
-                if not final_match and rejection_reasons:
-                    print(f"  • Rejection reasons:")
-                    for reason in rejection_reasons:
-                        print(f"    - {reason}")
             vt.stop()  # stop Thread
             break  # EXIT MAIN LOOP IMMEDIATELY
 
