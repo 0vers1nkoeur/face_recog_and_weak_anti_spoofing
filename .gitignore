@@ -27,4 +27,4 @@ __pycache__/
 
 # Not useful data to store remotely
 data/Enrolled_aligned/
-data/verification/
+data/verification/mediapipe_env/
