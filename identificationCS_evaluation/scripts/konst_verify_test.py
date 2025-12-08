@@ -7,7 +7,7 @@ import cv2
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(PROJECT_ROOT)
 
-from vision_detection.verification import get_embedding_from_aligned_face, compare_embeddings
+from identificationCS_evaluation.verification import get_embedding_from_aligned_face, compare_embeddings
 
 def main():
     # 1. Load reference embedding for user1 (Aleksa)
