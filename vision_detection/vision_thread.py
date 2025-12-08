@@ -10,6 +10,42 @@ from .face_alignment import align_and_crop, compute_eye_centers
 from .utils import FPSMeter, EyeSmoother
 
 
+def force_stop(vt, cap):
+    """Stop the VisionThread, release the camera, and close OpenCV windows."""
+    if cap is not None:
+        try:
+            cap.release()
+        except Exception:
+            pass
+
+    try:
+        cv2.destroyAllWindows()
+    except Exception:
+        pass
+
+    if vt is None:
+        return
+
+    try:
+        vt.stop()
+    except Exception:
+        pass
+
+    frame_queue = getattr(vt, "frame_queue", None)
+    if frame_queue is not None:
+        try:
+            frame_queue.put_nowait(None)
+        except queue.Full:
+            pass
+        except Exception:
+            pass
+
+    try:
+        vt.join()
+    except Exception:
+        pass
+
+
 class VisionThread(threading.Thread):
     """
     Background thread:

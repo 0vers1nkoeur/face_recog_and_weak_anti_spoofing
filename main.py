@@ -3,21 +3,17 @@ import argparse
 from datetime import datetime
 import cv2
 import os
-import sys
-from pathlib import Path
-from typing import Optional
 import numpy as np
-import matplotlib.pyplot as plt
-from PIL import Image, ImageOps
 
 # Custom imports
-from vision_detection.vision_thread import VisionThread
-from rppg.rppg_class import RPPG
-from vision_detection.verification import get_embedding_from_aligned_face, compare_embeddings
+from vision_detection.vision_thread import VisionThread, force_stop
 from vision_detection.face_alignment import align_and_crop
-from vision_detection.face_detection import FaceMeshDetector
+from rppg.rppg_class import RPPG
 from rppg.utils import SignalPlotter
+from identificationCS_evaluation.verification import get_embedding_from_aligned_face, compare_embeddings
+from identificationCS_evaluation.identification_eval import load_enrolled_gallery, reliability_srr
 
+# ------------------------ CONSTANTS ------------------------------
 SIZELIST = 10                               # size of the list of liveness for the final choice to accept/reject
 PREVIEW_DIR = "data/verification"           # live captures (what rPPG saves)
 REF_DIR = "data/Enrolled"                   # enrolled users (reference faces)
@@ -32,46 +28,10 @@ ALIGN_BBOX_SCALE = 2.0            # expand around bbox to keep forehead/chin/ear
 ALIGN_ROTATE = False              # disable rotation to keep full face (enroll/live consistent)
 
 
-def summarize_enrollment_distances(enrolled_embeddings):
-    """
-    Debug helper: show how far same-user and different-user templates are.
-    Use this to pick a sensible threshold.
-    """
-    intra = []
-    inter = []
-    user_ids = list(enrolled_embeddings.keys())
-
-    # same user pairs
-    for uid, embs in enrolled_embeddings.items():
-        for i in range(len(embs)):
-            for j in range(i + 1, len(embs)):
-                intra.append(compare_embeddings(embs[i], embs[j], threshold=THRESHOLD)[0])
-
-    # different user pairs
-    for i in range(len(user_ids)):
-        for j in range(i + 1, len(user_ids)):
-            for emb_a in enrolled_embeddings[user_ids[i]]:
-                for emb_b in enrolled_embeddings[user_ids[j]]:
-                    inter.append(compare_embeddings(emb_a, emb_b, threshold=THRESHOLD)[0])
-
-    def stats(arr):
-        if not arr:
-            return "None"
-        a = np.array(arr, dtype=np.float32)
-        return f"min={a.min():.3f}, median={np.median(a):.3f}, 95p={np.percentile(a,95):.3f}"
-
-    if intra or inter:
-        print("[Konst] 📈 Enrollment distance stats (use to tune THRESHOLD):")
-        print(f"       same user: {stats(intra)}")
-        print(f"       diff user: {stats(inter)}")
-        if intra and inter:
-            # a conservative suggestion: halfway between hard same-user (95p) and easy diff-user (5p)
-            suggest = 0.5 * (np.percentile(intra, 95) + np.percentile(inter, 5))
-            print(f"       suggested threshold ~ {suggest:.3f}")
-
-    return {"intra": intra, "inter": inter}
-
 def parse_args():
+    '''This function parses the command line arguments.
+    Returns:
+        argparse.Namespace: The parsed arguments.'''
     parser = argparse.ArgumentParser(description="Facial recognition + rPPG verification")
     parser.add_argument(
         "--rppg-skip",
@@ -79,139 +39,18 @@ def parse_args():
         help="Skip rPPG and go directly to verification (default runs full flow)",
     )
     return parser.parse_args()
-
-def canonical_user_id(fname: str) -> str:
-    """Drop a trailing numeric suffix to group multiple samples of the same user."""
-    base = os.path.splitext(fname)[0]
-    parts = base.rsplit("_", 1)
-    if len(parts) == 2 and parts[1].isdigit():
-        return parts[0]
-    return base
-
-def load_image_bgr(path: str):
-    """
-    Load image correcting EXIF orientation to avoid upside-down/sideways faces.
-    Returns BGR numpy array or None.
-    """
-    try:
-        with Image.open(path) as im:
-            im = ImageOps.exif_transpose(im)
-            im = im.convert("RGB")
-            arr = np.array(im)[:, :, ::-1]  # RGB -> BGR for OpenCV
-            return arr
-    except Exception as e:
-        print(f"[Konst] ⚠️ PIL load failed for {path}: {e}. Falling back to cv2.")
-    bgr = cv2.imread(path)
-    return bgr
-
-def reliability_srr(d1: Optional[float], d2: Optional[float]) -> float:
-    """
-    Relative gap between best and second-best distances. Higher => more reliable.
-    If only one identity exists (no second distance), treat as fully reliable.
-    """
-    if d2 is None:
-        return 1.0
-    if d1 is None or d2 <= d1:
-        return 0.0
-    return max(0.0, min(1.0, (d2 - d1) / (d2 + d1 + 1e-8)))
-
-#For easy close of camera, GUI **AND** thread (IF YOU ARE GOING TO STOP CAMERA OR PROGRAM IN ANY PLEASE USE THIS!!!)
-def force_stop(vt, cap):
-    try:
-        cap.release()
-    except:
-        pass
-
-    try:
-        cv2.destroyAllWindows()
-    except:
-        pass
-
-    try:
-        vt.stop()
-    except:
-        pass
-
-    try:
-        if hasattr(vt, "frame_queue"):  #Unblocks thread
-            vt.frame_queue.put(None) 
-    except:
-        pass
-
-    try:
-        vt.join()
-    except:
-        pass
-
+# ------------------------ MAIN FUNCTION ------------------------------
 def main():
-    # ===================== KONSTANTINOS: LOAD ENROLLED GALLERY =====================
-    # We support multiple enrolled users. Each image file in REF_DIR is one template.
-    # Example filenames:
-    #   data/Enrolled/aleksa_01.jpg -> user_id = "aleksa_01"
-    #   data/Enrolled/konst_01.jpg  -> user_id = "konst_01"
-
-    enrolled_embeddings = {}  # user_id -> list of embeddings
-    enrollment_detector = FaceMeshDetector(max_num_faces=1, refine_landmarks=True)
-
-    if not os.path.exists(REF_DIR):
-        print(f"[Konst] ❌ Enrolled directory not found: {REF_DIR}")
-        return
-
-    for fname in os.listdir(REF_DIR):
-        fpath = os.path.join(REF_DIR, fname)
-        if not os.path.isfile(fpath):
-            continue
-        if not fname.lower().endswith((".jpg", ".jpeg", ".png")):
-            continue
-
-        raw_id = os.path.splitext(fname)[0]  # e.g. "aleksa_01"
-        user_id = canonical_user_id(fname)   # drop trailing numeric suffix
-
-        # IMPORTANT: keep images in BGR here so they match the live `aligned` image
-        ref_bgr = load_image_bgr(fpath)
-        if ref_bgr is None:
-            print(f"[Konst] ⚠️ Could not read enrolled image: {fpath}")
-            continue
-
-        coords = enrollment_detector.process(ref_bgr)
-        if coords is None:
-            print(f"[Konst] ⚠️ No face detected in enrolled image: {fpath}")
-            continue
-
-        aligned_ref = align_and_crop(
-            ref_bgr,
-            coords,
-            crop_size=ALIGN_CROP_SIZE,
-            bbox_scale=ALIGN_BBOX_SCALE,
-            align=ALIGN_ROTATE,
-        )
-        if aligned_ref is None:
-            print(f"[Konst] ⚠️ Could not align enrolled image: {fpath}")
-            continue
-
-        # Save aligned reference so you can visually inspect what the model sees
-        os.makedirs(REF_ALIGNED_DIR, exist_ok=True)
-        aligned_save_path = os.path.join(REF_ALIGNED_DIR, f"{raw_id}.jpg")
-        cv2.imwrite(aligned_save_path, aligned_ref)
-
-        emb_ref = get_embedding_from_aligned_face(aligned_ref)
-        if emb_ref is None:
-            print(f"[Konst] ⚠️ Could not compute embedding for enrolled image: {fpath}")
-            continue
-
-        enrolled_embeddings.setdefault(user_id, []).append(emb_ref)
-
-    for user_id, embs in enrolled_embeddings.items():
-        if len(embs) > 1:
-            print(f"[Konst] 📦 Loaded {len(embs)} templates for {user_id}")
-
+    enrolled_embeddings = load_enrolled_gallery(
+        ref_dir=REF_DIR,
+        ref_aligned_dir=REF_ALIGNED_DIR,
+        align_crop_size=ALIGN_CROP_SIZE,
+        align_bbox_scale=ALIGN_BBOX_SCALE,
+        align_rotate=ALIGN_ROTATE,
+        threshold=THRESHOLD,
+    )
     if not enrolled_embeddings:
-        print("[Konst] ❌ No valid enrolled faces found in Enrolled/.")
         return
-
-    print(f"[Konst] 📸 Loaded {len(enrolled_embeddings)} enrolled face(s) from {REF_DIR}:")
-    print("       ", ", ".join(enrolled_embeddings.keys()))
-    summarize_enrollment_distances(enrolled_embeddings)
 
     # -------- VisionThread (processing only) --------
     vt = VisionThread()
