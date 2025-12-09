@@ -22,10 +22,10 @@ THRESHOLD = 0.15                            # distance threshold for accept / re
 LIVE_EMB_COUNT = 10                         # number of live embeddings to collect for a stable decision
 SECOND_GAP = 0.010                          # require best user to beat 2nd-best by this margin (your gap ~0.012)
 RPPG_SKIP = False                           # default: run rPPG; set via CLI flag to skip
-SRR_MIN = 0.01                    # minimum reliability score to accept (very permissive, distance is primary)
-ALIGN_CROP_SIZE = 320             # aligned face crop size (pixels)
-ALIGN_BBOX_SCALE = 2.0            # expand around bbox to keep forehead/chin/ears
-ALIGN_ROTATE = False              # disable rotation to keep full face (enroll/live consistent)
+SRR_MIN = 0.01                              # minimum reliability score to accept (very permissive, distance is primary)
+ALIGN_CROP_SIZE = 320                       # aligned face crop size (pixels)
+ALIGN_BBOX_SCALE = 2.0                      # expand around bbox to keep forehead/chin/ears
+ALIGN_ROTATE = False                        # disable rotation to keep full face (enroll/live consistent)
 
 
 def parse_args():
@@ -94,15 +94,6 @@ def main():
     cv2.namedWindow("Vision & Detection", cv2.WINDOW_NORMAL)
 
     # ------------------------------------------------
-
-    # -------- CAMERA OPENED IN MAIN  ----------------
-    cap = cv2.VideoCapture(0)
-    if not cap.isOpened():
-        print("❌ Cannot open camera")
-        force_stop(vt, cap)
-        return
-    
-    cv2.namedWindow("Vision & Detection", cv2.WINDOW_NORMAL)
 
     # ===================== MAIN LOOP =======================================
     while True:
