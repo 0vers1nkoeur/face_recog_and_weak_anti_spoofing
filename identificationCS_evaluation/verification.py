@@ -1,6 +1,5 @@
 import cv2
 import numpy as np
-import tempfile
 import os
 
 # HOG descriptor configured for square 64x64 inputs (fallback if deepface fails)
@@ -12,23 +11,46 @@ _HOG = cv2.HOGDescriptor(
     _nbins=9,
 )
 
-# Try to use deepface (ArcFace) for better discrimination
-# Fallback to HOG if deepface is not available
+# Try to use ArcFace ONNX for better discrimination (cross-platform)
+# Fallback to HOG if onnxruntime/model is not available
+_ARCFACE_MODEL = os.path.join(os.path.dirname(__file__), "models", "arcface_r100.onnx")
+_ARCFACE_SIZE = (112, 112)
+_arcface_session = None
+
 try:
-    from deepface import DeepFace
-    EMBEDDING_MODEL = "ArcFace"
-    print("[Embedding] Using ArcFace (DeepFace) for embeddings - best discrimination")
+    import onnxruntime as ort
+
+    if os.path.exists(_ARCFACE_MODEL):
+        _arcface_session = ort.InferenceSession(
+            _ARCFACE_MODEL,
+            providers=["CPUExecutionProvider"],
+        )
+        EMBEDDING_MODEL = "ArcFace_ONNX"
+        print(f"[Embedding] Using ArcFace ONNX model: {_ARCFACE_MODEL}")
+    else:
+        EMBEDDING_MODEL = "HOG"
+        print(f"[Embedding] ⚠️ ArcFace ONNX model not found at {_ARCFACE_MODEL}. Falling back to HOG.")
 except ImportError:
-    print("[Embedding] ⚠️ deepface not installed, falling back to HOG")
     EMBEDDING_MODEL = "HOG"
+    print("[Embedding] ⚠️ onnxruntime not installed, falling back to HOG")
+
+
+def _preprocess_arcface(img_bgr: np.ndarray) -> np.ndarray:
+    """Preprocess BGR face crop into ArcFace ONNX input tensor."""
+    rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
+    resized = cv2.resize(rgb, _ARCFACE_SIZE)
+    arr = resized.astype("float32")
+    arr = (arr - 127.5) / 128.0
+    arr = np.transpose(arr, (2, 0, 1))  # HWC -> CHW
+    arr = np.expand_dims(arr, 0)        # add batch
+    return arr
 
 
 def get_embedding_from_aligned_face(aligned_face_bgr: np.ndarray) -> np.ndarray | None:
     """
-    Get face embedding using FaceNet (via deepface) if available, otherwise HOG.
+    Get face embedding using ArcFace ONNX if available, otherwise HOG.
     
-    FaceNet provides 128-dimensional embeddings that are highly discriminative
-    for distinguishing between different people.
+    ArcFace embeddings provide strong discrimination for distinguishing identities.
 
     Returns:
         1D float32 numpy array, or None if image is invalid.
@@ -38,30 +60,15 @@ def get_embedding_from_aligned_face(aligned_face_bgr: np.ndarray) -> np.ndarray 
         return None
 
     try:
-        if EMBEDDING_MODEL == "FaceNet":
-            # Use deepface with FaceNet backend
-            # deepface.represent() requires a file path, so write to temp file
-            with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
-                tmp_path = tmp.name
-                cv2.imwrite(tmp_path, aligned_face_bgr)
-            
-            try:
-                embedding_obj = DeepFace.represent(
-                    img_path=tmp_path,
-                    model_name="ArcFace",
-                    enforce_detection=False,
-                )
-                if embedding_obj and len(embedding_obj) > 0:
-                    vec = np.array(embedding_obj[0]["embedding"], dtype="float32")
-                    # Normalize for consistency
-                    norm = np.linalg.norm(vec) + 1e-8
-                    vec = vec / norm
-                    return vec
-                return None
-            finally:
-                # Clean up temp file
-                if os.path.exists(tmp_path):
-                    os.remove(tmp_path)
+        if _arcface_session is not None:
+            blob = _preprocess_arcface(aligned_face_bgr)
+            output = _arcface_session.run(
+                None, {_arcface_session.get_inputs()[0].name: blob}
+            )[0]
+            vec = output.squeeze().astype("float32")
+            norm = np.linalg.norm(vec) + 1e-8
+            vec = vec / norm
+            return vec
         else:
             # Fallback to HOG
             gray = cv2.cvtColor(aligned_face_bgr, cv2.COLOR_BGR2GRAY)

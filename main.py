@@ -107,6 +107,9 @@ def main():
             print("❌ Cannot read frame")
             continue
 
+        # Mirror the frame horizontally so preview and processing are consistent with user view
+        frame = cv2.flip(frame, 1)
+
         # Send frame to background processing thread
         vt.submit_frame(frame)
 
