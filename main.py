@@ -62,7 +62,7 @@ def main():
         fps=30,
         window_seconds=15,
         snr_thresh_db=10.0,
-        roi_landmark_sets=RPPG.CHEEKS + RPPG.FOREHEAD
+        roi_landmark_sets=RPPG.NEW_CHEEKS + RPPG.FOREHEAD
     )
     plotter = SignalPlotter(rppg)
 

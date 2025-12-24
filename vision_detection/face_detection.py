@@ -1,6 +1,7 @@
 from typing import List, Tuple, Optional    #Importing new type for easier function returns
 import cv2
 import mediapipe as mp
+import numpy as np
 
 #Because mediapipe is used for everything not just face we need to specifie that
 # Some IDEs need the # type: ignore comment to avoid type checking issues with mediapipe even if it's properly installed
@@ -45,3 +46,14 @@ class FaceMeshDetector:
         xs = [x for x, _ in coords]     #Taking just x coordinates from landmarks
         ys = [y for _, y in coords]     #Taking just y coordinates from landmarks
         return min(xs), min(ys), max(xs), max(ys)
+
+    @staticmethod
+    def compute_polygone(coords: List[Tuple[int, int]]) -> "np.ndarray":
+        """
+        Return polygon points for a precise ROI zone (cv2-compatible format).
+        """
+        import numpy as np
+
+        if not coords:
+            return np.zeros((0, 1, 2), dtype=np.int32)
+        return np.array(coords, dtype=np.int32).reshape((-1, 1, 2))

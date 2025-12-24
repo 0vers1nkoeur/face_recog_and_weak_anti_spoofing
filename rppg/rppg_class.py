@@ -1,4 +1,6 @@
 import numpy as np
+import cv2
+from typing import Dict, Optional
 from scipy.signal import detrend, butter, filtfilt
 from vision_detection.face_detection import FaceMeshDetector
 from rppg.roisets_class import ROISet
@@ -9,6 +11,12 @@ class RPPG:
         {
             "left_cheek": ROISet.LEFT_CHEEK,
             "right_cheek": ROISet.RIGHT_CHEEK,
+        }
+    )
+    NEW_CHEEKS = ROISet(
+        {
+            "left_cheek": ROISet.NEW_LEFT_CHEEK,
+            "right_cheek": ROISet.NEW_RIGHT_CHEEK,
         }
     )
     FOREHEAD = ROISet({"forehead": ROISet.FOREHEAD})
@@ -54,7 +62,7 @@ class RPPG:
             raise ValueError("[rPPG] roi_landmark_sets must contain at least one ROI definition.")
 
         # Initialize last ROIs storage for debug visualisation
-        self.last_rois = {name: None for name in self.roi_landmark_sets}
+        self.last_rois: Dict[str, Optional[np.ndarray]] = {name: None for name in self.roi_landmark_sets}
 
         # Initialize the rolling signal buffer, this will store the mean green channel values over time
         self.signal_buffer = []
@@ -96,23 +104,24 @@ class RPPG:
             except IndexError:
                 print(f"[rPPG] Warning: ROI {name} references invalid landmark indices, skipping.")
                 continue
-            # Using compute_bbox to get the bounding box of the ROI
-            x1, y1, x2, y2 = FaceMeshDetector.compute_bbox(roi_points)              # We use FaceMeshDetector's static method to compute bbox
-            # Ensure the bounding box is within frame bounds---------------------
-            x1 = max(0, min(frame_w - 1, x1))                                       # Ensure x1 is at least 0 and at most frame width - 1 to avoid going out of bounds
-            x2 = max(x1 + 1, min(frame_w, x2))                                      # Ensure x2 is at least one pixel more than x1 and at most frame width                      
-            y1 = max(0, min(frame_h - 1, y1))                                       # Ensure y1 is at least 0 and at most frame height - 1
-            y2 = max(y1 + 1, min(frame_h, y2))                                      # Ensure y2 is at least one pixel more than y1 and at most frame height
-            roi = frame_rgb[y1:y2, x1:x2]                                           # Extract the ROI from the frame
-            # Sanity check for empty ROI
-            if roi.size == 0:
+            # Use polygonal ROI to avoid including background pixels
+            poly = FaceMeshDetector.compute_polygone(roi_points)
+            if poly.shape[0] < 3:
+                print(f"[rPPG] Warning: ROI {name} has too few points for a polygon, skipping.")
+                continue
+            mask = np.zeros((frame_h, frame_w), dtype=np.uint8)
+            cv2.fillPoly(mask, [poly], (1.0,))
+            masked = cv2.bitwise_and(frame_rgb, frame_rgb, mask=mask)
+            green_pixels = masked[:, :, 1][mask == 1]
+            if green_pixels.size == 0:
                 print(f"[rPPG] Warning: Empty ROI for {name}, skipping.")
                 continue
+            roi = masked
             #--------------------------------------------------------------------
             # Store the last extracted ROIs for debug visualisation for each defined ROI
             self.last_rois[name] = roi
             # Compute mean of green channel in the ROI and store it
-            mean_values.append(roi[:, :, 1].mean(dtype=np.float32))
+            mean_values.append(green_pixels.mean(dtype=np.float32))
 
         # Check if we have any mean values computed
         if not mean_values:
@@ -169,22 +178,23 @@ class RPPG:
         spectrum = np.fft.rfft(filtered_signal_buffer)
         power = spectrum.real * spectrum.real + spectrum.imag * spectrum.imag
 
-        hr_mask = (freqs >= self.low_hz) & (freqs <= self.high_hz)
+        hr_mask = (freqs >= self.low_hz) & (freqs <= self.high_hz) # The mask is used to filter the frequency components within the heart rate range
         if not np.any(hr_mask):
             print("[rPPG] Warning: No frequency components found in heart rate range.")
             return None, None, False
 
+        # Extract peak frequency and compute BPM and SNR
         band_freqs = freqs[hr_mask]
         band_power = power[hr_mask]
         peak_idx = int(np.argmax(band_power))
         peak_freq = band_freqs[peak_idx]
         bpm = float(peak_freq * 60.0)
 
-        if bpm < 40 or bpm > 180:  # plage humaine raisonnable
+        if bpm < 40 or bpm > 180:  # human reasonable range
             return bpm, None, False
         
         noise_power = np.median(band_power)
-        snr = band_power[peak_idx] / (noise_power + 1e-12)  # éviter division par zéro
+        snr = band_power[peak_idx] / (noise_power + 1e-12)  # avoid division by zero
         snr_db = float(10.0 * np.log10(snr))
         
         # Determine liveness based on SNR threshold

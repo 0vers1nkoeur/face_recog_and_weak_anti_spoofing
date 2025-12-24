@@ -4,9 +4,11 @@ class ROISet:
     Supports the + operator for easy combinations, e.g. RPPG.CHEEKS + RPPG.FOREHEAD.
     """
     # Create a list of macros to set the landmark indices for ROI extraction compute_bbox
-    RIGHT_CHEEK = [234, 93, 132, 58, 172, 136, 150, 149, 176, 148]
-    LEFT_CHEEK = [454, 323, 361, 288, 397, 365, 379, 378, 400, 377]
-    FOREHEAD = [9, 105, 104 ,103, 10, 334, 332, 333, 297, 338, 109, 67]
+    RIGHT_CHEEK = [234, 93, 132, 58, 172, 136, 150, 149, 176, 148] #DO NOT USE ANYMORE
+    NEW_RIGHT_CHEEK = [129, 126, 100, 119, 118, 117, 123, 147, 213, 192, 135, 210, 212, 207, 206, 203]
+    LEFT_CHEEK = [454, 323, 361, 288, 397, 365, 379, 378, 400, 377] #DO NOT USE ANYMORE
+    NEW_LEFT_CHEEK = [358, 355, 329, 348, 347, 346, 352, 376, 433, 416, 364, 394, 431, 430, 432, 436, 426, 423]
+    FOREHEAD = [9, 107, 65, 105, 104, 103, 67, 109, 10, 338, 297, 332, 333, 334, 296, 336]
 
     def __init__(self, mapping):
         """
