@@ -216,6 +216,12 @@ def main():
         # GUI Display
         cv2.imshow("Vision & Detection", frame)
 
+        # ESC stops EVERYTHING immediately
+        if key == 27:  # Escape key
+            print("ESC pressed. Exiting...")
+            vt.stop()  # stop Thread
+            break  # EXIT MAIN LOOP IMMEDIATELY
+
         #-------------------------------------------------------------------------------
         if vt.last_frame is not None:
             counter += 1
@@ -427,12 +433,6 @@ def main():
                 break  # EXIT MAIN LOOP IMMEDIATELY
         
         # END OF FRAME PROCESSING --------------------------------
-
-        # ESC stops EVERYTHING immediately
-        if key == 27:  # Escape key
-            print("ESC pressed. Exiting...")
-            vt.stop()  # stop Thread
-            break  # EXIT MAIN LOOP IMMEDIATELY
 
         # If thread died for any reason
         if not vt.running:
