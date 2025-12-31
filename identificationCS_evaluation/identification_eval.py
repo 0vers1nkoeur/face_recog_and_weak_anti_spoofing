@@ -122,7 +122,7 @@ def load_enrolled_gallery(
     ref_aligned_dir = Path(ref_aligned_dir)
 
     enrolled_embeddings: Dict[str, List[np.ndarray]] = {}
-    enrollment_detector = FaceMeshDetector(max_num_faces=1, refine_landmarks=True)
+    #enrollment_detector = FaceMeshDetector(max_num_faces=1, refine_landmarks=True)
 
     if not ref_dir.exists():
         print(f"[Konst] ❌ Enrolled directory not found: {ref_dir}")
@@ -140,26 +140,27 @@ def load_enrolled_gallery(
         if ref_bgr is None:
             print(f"[Konst] ⚠️ Could not read enrolled image: {img_path}")
             continue
+        aligned_ref = ref_bgr
 
-        coords = enrollment_detector.process(ref_bgr)
-        if coords is None:
-            print(f"[Konst] ⚠️ No face detected in enrolled image: {img_path}")
-            continue
+        #coords = enrollment_detector.process(ref_bgr)
+        #if coords is None:
+            #print(f"[Konst] ⚠️ No face detected in enrolled image: {img_path}")
+            #continue
 
-        aligned_ref = align_and_crop(
-            ref_bgr,
-            coords,
-            crop_size=align_crop_size,
-            bbox_scale=align_bbox_scale,
-            align=align_rotate,
-        )
-        if aligned_ref is None:
-            print(f"[Konst] ⚠️ Could not align enrolled image: {img_path}")
-            continue
+        #aligned_ref = align_and_crop(
+            #ref_bgr,
+            #coords,
+            #crop_size=align_crop_size,
+            #bbox_scale=align_bbox_scale,
+            #align=align_rotate,
+        #)
+        #if aligned_ref is None:
+            #print(f"[Konst] ⚠️ Could not align enrolled image: {img_path}")
+            #continue
 
-        ref_aligned_dir.mkdir(parents=True, exist_ok=True)
-        aligned_save_path = ref_aligned_dir / f"{raw_id}.jpg"
-        cv2.imwrite(str(aligned_save_path), aligned_ref)
+        #ref_aligned_dir.mkdir(parents=True, exist_ok=True)
+        #aligned_save_path = ref_aligned_dir / f"{raw_id}.jpg"
+        #cv2.imwrite(str(aligned_save_path), aligned_ref)
 
         emb_ref = get_embedding_from_aligned_face(aligned_ref)
         if emb_ref is None:

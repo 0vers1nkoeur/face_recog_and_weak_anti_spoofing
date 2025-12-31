@@ -137,6 +137,7 @@ class VisionThread(threading.Thread):
                     frame_bgr=frame,
                     coords=coords,
                     crop_size=224,
+                    bbox_scale=1.10,
                 )
                 if aligned is not None:
                     self.last_aligned_face = aligned

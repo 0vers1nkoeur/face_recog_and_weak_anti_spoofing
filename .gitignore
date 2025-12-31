@@ -28,3 +28,10 @@ __pycache__/
 # Not useful data to store remotely
 data/Enrolled_aligned/
 data/verification/
+
+# Large datasets (local only)
+data/lfw/
+data/liveness_frames/
+
+# Models (ONNX, etc.)
+models/

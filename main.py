@@ -13,12 +13,14 @@ from rppg.utils import SignalPlotter
 from identificationCS_evaluation.verification import get_embedding_from_aligned_face, compare_embeddings
 from identificationCS_evaluation.identification_eval import load_enrolled_gallery, reliability_srr
 
+
+
 # ------------------------ CONSTANTS ------------------------------
 SIZELIST = 10                               # size of the list of liveness for the final choice to accept/reject
 PREVIEW_DIR = "data/verification"           # live captures (what rPPG saves)
 REF_DIR = "data/Enrolled"                   # enrolled users (reference faces)
 REF_ALIGNED_DIR = "data/Enrolled_aligned"   # debug: aligned crops of enrolled faces
-THRESHOLD = 0.15                            # distance threshold for accept / reject (tight: your ~0.16 passes, others ~0.17+ fail)
+THRESHOLD = 0.40                            # distance threshold for accept / reject (tight: your ~0.16 passes, others ~0.17+ fail)
 LIVE_EMB_COUNT = 10                         # number of live embeddings to collect for a stable decision
 SECOND_GAP = 0.010                          # require best user to beat 2nd-best by this margin (your gap ~0.012)
 RPPG_SKIP = False                           # default: run rPPG; set via CLI flag to skip
@@ -27,6 +29,14 @@ ALIGN_CROP_SIZE = 320                       # aligned face crop size (pixels)
 ALIGN_BBOX_SCALE = 2.0                      # expand around bbox to keep forehead/chin/ears
 ALIGN_ROTATE = False                        # disable rotation to keep full face (enroll/live consistent)
 
+def draw_landmarks(frame, coords, color=(0, 255, 0), radius=1):
+    """Draw facial landmarks on the frame."""
+    if coords is None:
+        return frame
+    
+    for (x, y) in coords:
+        cv2.circle(frame, (x, y), radius, color, -1)
+    return frame
 
 def parse_args():
     '''This function parses the command line arguments.
@@ -61,7 +71,7 @@ def main():
     rppg = RPPG(
         fps=30,
         window_seconds=15,
-        snr_thresh_db=10.0,
+        snr_thresh_db=12.0,
         roi_landmark_sets=RPPG.NEW_CHEEKS + RPPG.FOREHEAD
     )
     plotter = SignalPlotter(rppg)
@@ -117,6 +127,20 @@ def main():
 
         # Checking if face is detected
         face_detected = vt.last_coords is not None
+
+        # ----- Adding just for better documentation -----
+        #if vt.last_coords is not None:
+           
+            #for i, (x, y) in enumerate(vt.last_coords):
+                #if i % 2 == 0:  
+                    #cv2.circle(frame, (x, y), 2, (0, 255, 0), -1)  
+            
+            
+            #cv2.circle(frame, vt.last_coords[33], 3, (0, 0, 255), -1)  
+            #cv2.circle(frame, vt.last_coords[263], 3, (0, 0, 255), -1) 
+            
+            #cv2.circle(frame, vt.last_coords[1], 3, (0, 0, 255), -1)   
+        # -------------------------------------------------
 
         # Semi-transparent header 
         overlay = frame.copy()
@@ -221,6 +245,32 @@ def main():
             print("ESC pressed. Exiting...")
             vt.stop()  # stop Thread
             break  # EXIT MAIN LOOP IMMEDIATELY
+
+        # ---------------- ENROLL CAPTURE (QUEUE ONLY) ----------------
+        if key == ord('e'):
+            if vt.last_aligned_face is not None:
+
+                base_dir = os.path.join(REF_DIR, "New_Users_to_be_Enrolled")
+                os.makedirs(base_dir, exist_ok=True)
+
+                # automatsko numerisanje slika
+                existing = len([
+                    f for f in os.listdir(base_dir)
+                    if f.lower().endswith((".jpg", ".png"))
+                ]) + 1
+
+                filename = f"enroll_{existing:03d}.jpg"
+                save_path = os.path.join(base_dir, filename)
+
+                cv2.imwrite(save_path, vt.last_aligned_face)
+                print(f"[ENROLL] Saved to queue: {save_path}")
+
+            else:
+                print("[ENROLL] No aligned face available")
+        # ------------------------------------------------------------
+
+
+
 
         #-------------------------------------------------------------------------------
         if vt.last_frame is not None:
