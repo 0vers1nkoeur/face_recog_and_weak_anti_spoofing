@@ -35,3 +35,7 @@ data/liveness_frames/
 
 # Models (ONNX, etc.)
 models/
+=======
+__pycache__/
+*.pyc
+
