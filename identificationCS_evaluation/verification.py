@@ -7,7 +7,7 @@ import numpy as np
 # ============================================================
 
 # 🔴 MAIN SWITCH (THIS IS WHAT YOU CHANGE)
-USE_SFACE = False        # True → use SFace (CNN), False → use HOG only
+USE_SFACE = True        # True → use SFace (CNN), False → use HOG only
 
 # --- SFace (CNN, primary method) ---
 SFACE_MODEL_PATH = os.path.join(
