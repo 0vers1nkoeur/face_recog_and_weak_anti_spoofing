@@ -20,7 +20,11 @@ SIZELIST = 10                               # size of the list of liveness for t
 PREVIEW_DIR = "data/verification"           # live captures (what rPPG saves)
 REF_DIR = "data/Enrolled"                   # enrolled users (reference faces)
 REF_ALIGNED_DIR = "data/Enrolled_aligned"   # debug: aligned crops of enrolled faces
+<<<<<<< HEAD
 THRESHOLD = 0.40                            # distance threshold for accept / reject (tight: your ~0.16 passes, others ~0.17+ fail)
+=======
+THRESHOLD = 0.215                            # distance threshold for accept / reject (tight: your ~0.16 passes, others ~0.17+ fail)
+>>>>>>> d3003d3 (Update main.py (tweaks))
 LIVE_EMB_COUNT = 10                         # number of live embeddings to collect for a stable decision
 SECOND_GAP = 0.010                          # require best user to beat 2nd-best by this margin (your gap ~0.012)
 RPPG_SKIP = False                           # default: run rPPG; set via CLI flag to skip
