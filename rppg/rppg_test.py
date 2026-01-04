@@ -6,6 +6,7 @@ from typing import Dict, List, Optional, Tuple
 import cv2
 import numpy as np
 
+# Ensure project root is on sys.path when running this file directly.
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
@@ -16,6 +17,7 @@ from vision_detection.face_detection import FaceMeshDetector
 
 
 def _load_gt_bpm(gt_path: Path) -> Tuple[np.ndarray, np.ndarray]:
+    # gtdump.xmp: timestamp_ms, bpm, ...
     times_s: List[float] = []
     bpm_values: List[float] = []
     with gt_path.open("r", encoding="utf-8") as handle:
@@ -35,6 +37,7 @@ def _load_gt_bpm(gt_path: Path) -> Tuple[np.ndarray, np.ndarray]:
 
 
 def _interpolate_bpm(times_s: np.ndarray, bpm_values: np.ndarray, t_s: float) -> Optional[float]:
+    # Linear interpolation to align GT BPM with a frame timestamp.
     if times_s.size == 0 or bpm_values.size == 0:
         return None
     if t_s < float(times_s[0]) or t_s > float(times_s[-1]):
@@ -43,6 +46,7 @@ def _interpolate_bpm(times_s: np.ndarray, bpm_values: np.ndarray, t_s: float) ->
 
 
 def _find_video_path(subject_dir: Path) -> Optional[Path]:
+    # Pick the first video file in the subject folder.
     for ext in (".avi", ".mp4", ".mov"):
         matches = sorted(subject_dir.glob(f"*{ext}"))
         if matches:
@@ -70,11 +74,13 @@ def evaluate_ubfc_simple(
     if not dataset_dir.exists():
         raise FileNotFoundError(f"Dataset directory not found: {dataset_dir}")
 
+    # UBFC Simple layout: one directory per subject.
     subject_dirs = sorted([d for d in dataset_dir.iterdir() if d.is_dir()])
     if max_subjects is not None:
         subject_dirs = subject_dirs[:max_subjects]
 
     results: Dict[str, Dict[str, float]] = {}
+    # Reuse a single detector across subjects to avoid repeated init cost.
     detector = FaceMeshDetector(max_num_faces=1, refine_landmarks=True)
 
     for subject_dir in subject_dirs:
@@ -85,8 +91,10 @@ def evaluate_ubfc_simple(
                 print(f"[rPPG] Skipping {subject_dir.name}: missing video or gtdump.xmp")
             continue
 
+        # Load ground-truth BPM series from gtdump.xmp.
         gt_times_s, gt_bpm = _load_gt_bpm(gt_path)
 
+        # Open video and read FPS metadata (fallback to 30 if missing).
         cap = cv2.VideoCapture(str(video_path))
         fps = float(cap.get(cv2.CAP_PROP_FPS))
         if fps <= 0:
@@ -102,23 +110,27 @@ def evaluate_ubfc_simple(
             debug=debug,
         )
 
+        # Evaluate once every step_seconds when the buffer is full.
         step_frames = max(1, int(round(fps * step_seconds)))
         frame_idx = 0
         total_windows = 0
         valid_windows = 0
         errors: List[float] = []
 
+        # Measure processing speed to estimate efficiency.
         start_t = time.perf_counter()
         while True:
             ok, frame_bgr = cap.read()
             if not ok:
                 break
 
+            # Face landmarks drive ROI extraction for rPPG.
             coords = detector.process(frame_bgr)
             if coords is not None:
                 frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
                 rppg.update_buffer(frame_rgb, coords)
 
+            # Compute BPM on rolling windows once the buffer is full.
             if len(rppg.signal_buffer) == rppg.buffer_size and (frame_idx % step_frames == 0):
                 bpm, _, _ = rppg.compute_liveness()
                 total_windows += 1
@@ -134,6 +146,7 @@ def evaluate_ubfc_simple(
         elapsed = max(1e-9, time.perf_counter() - start_t)
         cap.release()
 
+        # Efficiency metrics: throughput and real-time factor.
         processed_fps = frame_idx / elapsed
         real_time_factor = processed_fps / fps if fps > 0 else 0.0
         coverage = valid_windows / total_windows if total_windows else 0.0
@@ -156,6 +169,7 @@ def evaluate_ubfc_simple(
                 f"coverage={coverage:.2f} | xRT={real_time_factor:.2f}"
             )
 
+    # Aggregate global metrics across all subjects.
     if results:
         maes = [v["mae"] for v in results.values() if not np.isnan(v["mae"])]
         rmses = [v["rmse"] for v in results.values() if not np.isnan(v["rmse"])]
