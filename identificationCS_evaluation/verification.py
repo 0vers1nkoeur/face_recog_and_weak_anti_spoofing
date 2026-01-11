@@ -17,7 +17,7 @@ SFACE_THRESHOLD = 0.40   # cosine distance (lower = stricter)
 
 # --- HOG (fallback / alternative) ---
 HOG_SIZE = (64, 64)
-HOG_THRESHOLD = 0.15
+HOG_THRESHOLD = 0.40
 
 # ============================================================
 # SFace INITIALIZATION (CONTROLLED BY FLAG)

@@ -29,6 +29,7 @@ CROP_SIZE = 224
 
 # 🔴 MANUAL DISTANCE THRESHOLD
 DIST_THRESHOLD = 0.4
+MAX_DISTANCE = 2.0
 # ==================================================================
 
 
@@ -132,12 +133,12 @@ def main():
         e2 = compute_embedding(img2, detector)
 
         if e1 is None or e2 is None:
-            continue
+            dist = MAX_DISTANCE
+        else:
+            v1 = e1["data"] if isinstance(e1, dict) else e1
+            v2 = e2["data"] if isinstance(e2, dict) else e2
+            dist = cosine_distance(v1, v2)
 
-        v1 = e1["data"] if isinstance(e1, dict) else e1
-        v2 = e2["data"] if isinstance(e2, dict) else e2
-
-        dist = cosine_distance(v1, v2)
         distances.append(dist)
         valid_labels.append(label)
 
@@ -156,7 +157,7 @@ def main():
     FRR = FN / (FN + TP + 1e-8)
     HTER = (FAR + FRR) / 2
 
-    print("\n[LFW] VERIFICATION RESULTS")
+    print("\n[LFW] IDENTIFICATION RESULTS")
     print("------------------------------------------------")
     print(f"Distance threshold : {DIST_THRESHOLD:.4f}")
     print(f"FAR                : {FAR:.4f}")
@@ -174,7 +175,7 @@ def main():
     plt.plot([0, 1], [0, 1], "--", label="Random")
     plt.xlabel("False Positive Rate (FAR)")
     plt.ylabel("True Positive Rate (1 - FRR)")
-    plt.title("LFW Verification ROC (Cosine Distance)")
+    plt.title("LFW Identification ROC (Cosine Distance)")
     plt.legend(loc="lower right")
     plt.grid(True, linestyle="--", alpha=0.6)
 
