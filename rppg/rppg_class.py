@@ -38,10 +38,10 @@ class RPPG:
         self.fps = fps
         self.window_seconds = window_seconds
         self.buffer_size = int(fps * window_seconds)
-        self.low_hz = low_hz                                # Lower frequency bound for bandpass filter (Hz)
-        self.high_hz = high_hz                              # Upper frequency bound for bandpass filter (Hz)
+        self.low_hz = low_hz                                # Lower bandpass cutoff (Hz)
+        self.high_hz = high_hz                              # Upper bandpass cutoff (Hz)
         self.snr_thresh_db = snr_thresh_db                  # SNR threshold in dB for liveness decision
-        self.debug = debug                                  # Toggle detailed debug
+        self.debug = debug                                  # Toggle detailed debug output
 
         # If no ROISet is chosen, use the default CHEEKS set
         if roi_landmark_sets is None:
@@ -88,7 +88,7 @@ class RPPG:
         if frame_rgb is None or landmarks is None or len(landmarks) == 0:
             print("[rPPG] Error: Missing frame or landmarks.")
             return
-        if self.roi_landmark_sets is None or len(self.roi_landmark_sets) == 0:       # This checks if we have frame and landmarkss
+        if self.roi_landmark_sets is None or len(self.roi_landmark_sets) == 0:
             print("[rPPG] Error: Missing ROI landmark sets.")
             return
         #----------------------------------------------------------------------
@@ -98,7 +98,7 @@ class RPPG:
         # Initialize list to store mean green values from each ROI
         mean_values = []
         # We loop over each defined ROI set to extract and compute mean green channel
-        for name, roi_indices in self.roi_landmark_sets.items():                    # roi_landmark_sets is a dict where key is name of roi and value is list of landmark indices. Ex : {"left_cheek": [50, 101, 102, 103], "right_cheek": [...]}
+        for name, roi_indices in self.roi_landmark_sets.items():
             try:
                 roi_points = [landmarks[i] for i in roi_indices]
             except IndexError:
@@ -118,7 +118,7 @@ class RPPG:
                 continue
             roi = masked
             #--------------------------------------------------------------------
-            # Store the last extracted ROIs for debug visualisation for each defined ROI
+            # Store the last extracted ROI for debug visualization
             self.last_rois[name] = roi
             # Compute mean of green channel in the ROI and store it
             mean_values.append(green_pixels.mean(dtype=np.float32))
@@ -136,7 +136,6 @@ class RPPG:
         if len(self.signal_buffer) > self.buffer_size:
             self.signal_buffer.pop(0)
 
-    # TODO Check the correctness of the code 
     def compute_liveness(self):
         """
         Use self.signal_buffer to:
@@ -153,49 +152,53 @@ class RPPG:
         # remove slow variations in the signal that are not related to the heart rate. 
         # Ex of slow variations : gradual changes in lighting or movement artifacts.
         signal = detrend(signal)
-        # Bandpass filter design, we use Butterworth filter to isolate the heart rate frequency band------------------------
+        # Bandpass filter design (Butterworth) to isolate the heart rate band.
         nyquist = 0.5 * self.fps                                    # Nyquist frequency is half the sampling rate (fps)
         low = self.low_hz / nyquist                                 # Normalized low cutoff frequency             
         high = self.high_hz / nyquist                               # Normalized high cutoff frequency
-        # 3rd order Butterworth bandpass filter
-        # The filter is deterministic, meaning it will produce the same output for the same input every time.
-        # Here, we only put into parameters the parameters of the filter
-        # 3 is the order of the filter, [low, high] are the cutoff frequencies and btype is bandpass
-        # How it works ? We use the known Butterworth
+        # 4th order Butterworth bandpass filter.
         b,a = butter(4, [low, high], btype='bandpass')              # type: ignore
         #------------------------------------------------------------------------------------------------------------------
         # Apply the bandpass filter
         filtered_signal_buffer = filtfilt(b, a, signal)
-        # Store as a plain list so we can clear/extend it easily elsewhere
+        # Store the filtered signal for debugging/inspection.
         self.filtered_signal_buffer = filtered_signal_buffer
-        # Rejet si quasi pas de dynamique
-        if np.std(filtered_signal_buffer) < 1e-3:  # valeur à ajuster empiriquement
+        # Reject if there is almost no dynamics
+        if np.std(filtered_signal_buffer) < 1e-3:  # value to be adjusted empirically
             return None, None, False
         
         # Compute the power spectrum using FFT
-        n_samples = filtered_signal_buffer.shape[0]
-        freqs = np.fft.rfftfreq(n_samples, d=1.0 / self.fps)
-        spectrum = np.fft.rfft(filtered_signal_buffer)
-        power = spectrum.real * spectrum.real + spectrum.imag * spectrum.imag
+        n_samples = filtered_signal_buffer.shape[0]                             # We get the length of the filtered signal buffer
+        freqs = np.fft.rfftfreq(n_samples, d=1.0 / self.fps)                    # Compute the frequency bins for the FFT. This only return the positive frequencies with the sample spacing d=1/fps
+        spectrum = np.fft.rfft(filtered_signal_buffer)                          # Compute the FFT of the filtered signal
+        power = spectrum.real * spectrum.real + spectrum.imag * spectrum.imag   # |X|^2 = Re(X)^2 + Im(X)^2, signal theory
 
-        hr_mask = (freqs >= self.low_hz) & (freqs <= self.high_hz) # The mask is used to filter the frequency components within the heart rate range
+        hr_mask = (freqs >= self.low_hz) & (freqs <= self.high_hz)              # The mask is used to filter the frequency components within the heart rate range
         if not np.any(hr_mask):
             print("[rPPG] Warning: No frequency components found in heart rate range.")
             return None, None, False
 
         # Extract peak frequency and compute BPM and SNR
-        band_freqs = freqs[hr_mask]
-        band_power = power[hr_mask]
-        peak_idx = int(np.argmax(band_power))
-        peak_freq = band_freqs[peak_idx]
-        bpm = float(peak_freq * 60.0)
+        # We create 2 arrays that only contain the frequencies and power values within the heart rate band
+        band_freqs = freqs[hr_mask]                                             # Frequencies within the heart rate band
+        band_power = power[hr_mask]                                             # Corresponding power values    
+        # Smooth the power spectrum to reduce spurious peaks
+        band_power_smooth = np.convolve(band_power, np.ones(3) / 3.0, mode="same")
+        peak_idx = int(np.argmax(band_power_smooth))                                   # Index of the peak power in the band
+        peak_freq = band_freqs[peak_idx]                                        # Frequency corresponding to the peak power
+        bpm = float(peak_freq * 60.0)                                           # Convert frequency to beats per minute
+        # Reject peaks too close to band edges (often noise)
+        if peak_freq < self.low_hz + 0.05 or peak_freq > self.high_hz - 0.05:
+            return bpm, None, False
 
         if bpm < 40 or bpm > 180:  # human reasonable range
             return bpm, None, False
         
-        noise_power = np.median(band_power)
-        snr = band_power[peak_idx] / (noise_power + 1e-12)  # avoid division by zero
-        snr_db = float(10.0 * np.log10(snr))
+        # Estimate noise power excluding the peak frequency bin
+        band_power_wo_peak = np.delete(band_power, peak_idx)
+        noise_power = np.median(band_power_wo_peak)                                     # estimate noise power as median power in the band
+        snr = band_power[peak_idx] / (noise_power + 1e-12)                      # We use 1e-12 to avoid division by zero
+        snr_db = float(10.0 * np.log10(snr))                                    # Convert SNR to decibels using SNR[DB] = 10*log10(SNR[Hz])
         
         # Determine liveness based on SNR threshold
         is_live = snr_db >= self.snr_thresh_db
