@@ -25,9 +25,10 @@ LIVE_EMB_COUNT = 10                         # number of live embeddings to colle
 SECOND_GAP = 0.010                          # require best user to beat 2nd-best by this margin (your gap ~0.012)
 RPPG_SKIP = False                           # default: run rPPG; set via CLI flag to skip
 SRR_MIN = 0.01                              # minimum reliability score to accept (very permissive, distance is primary)
-ALIGN_CROP_SIZE = 320                       # aligned face crop size (pixels)
-ALIGN_BBOX_SCALE = 2.0                      # expand around bbox to keep forehead/chin/ears
-ALIGN_ROTATE = False                        # disable rotation to keep full face (enroll/live consistent)
+                                            # Identification/enrollment canonical preprocessing parameters
+ALIGN_CROP_SIZE = 224                       # Output size for embeddings (consistent)
+ALIGN_BBOX_SCALE = 1.10                     # Tight crop (small background)
+ALIGN_ROTATE = True                         # Align by eyes (more stable embeddings)
 
 def draw_landmarks(frame, coords, color=(0, 255, 0), radius=1):
     """Draw facial landmarks on the frame."""
@@ -63,7 +64,13 @@ def main():
         return
 
     # -------- VisionThread (processing only) --------
-    vt = VisionThread()
+    # Use the same preprocessing params also inside the thread (preview consistency)
+    vt = VisionThread(
+        align_crop_size=ALIGN_CROP_SIZE,
+        align_bbox_scale=ALIGN_BBOX_SCALE,
+        align_rotate=ALIGN_ROTATE,
+    )
+
     vt.start()
     # ------------------------------------------------
 
@@ -248,25 +255,37 @@ def main():
 
         # ---------------- ENROLL CAPTURE (QUEUE ONLY) ----------------
         if key == ord('e'):
-            if vt.last_aligned_face is not None:
+            base_dir = os.path.join(REF_DIR, "New_Users_to_be_Enrolled")
+            os.makedirs(base_dir, exist_ok=True)
 
-                base_dir = os.path.join(REF_DIR, "New_Users_to_be_Enrolled")
-                os.makedirs(base_dir, exist_ok=True)
+            # automatic numbering
+            existing = len([
+                f for f in os.listdir(base_dir)
+                if f.lower().endswith((".jpg", ".png"))
+            ]) + 1
 
-                # automatsko numerisanje slika
-                existing = len([
-                    f for f in os.listdir(base_dir)
-                    if f.lower().endswith((".jpg", ".png"))
-                ]) + 1
+            filename = f"enroll_{existing:03d}.jpg"
+            save_path = os.path.join(base_dir, filename)
 
-                filename = f"enroll_{existing:03d}.jpg"
-                save_path = os.path.join(base_dir, filename)
+            # IMPORTANT: use the SAME preprocessing as identification
+            if vt.last_frame is not None and vt.last_coords is not None:
+                enroll_face = align_and_crop(
+                    frame_bgr=vt.last_frame,
+                    coords=vt.last_coords,
+                    crop_size=ALIGN_CROP_SIZE,
+                    bbox_scale=ALIGN_BBOX_SCALE,
+                    align=ALIGN_ROTATE,
+                )
 
-                cv2.imwrite(save_path, vt.last_aligned_face)
-                print(f"[ENROLL] Saved to queue: {save_path}")
-
+                if enroll_face is not None:
+                    cv2.imwrite(save_path, enroll_face)
+                    print(f"[ENROLL] Saved (canonical): {save_path}")
+                else:
+                    print("[ENROLL] Align/crop failed (no face).")
             else:
-                print("[ENROLL] No aligned face available")
+                print("[ENROLL] No frame/landmarks available yet.")
+
+
         # ------------------------------------------------------------
 
 

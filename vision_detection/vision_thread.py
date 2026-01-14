@@ -3,8 +3,6 @@ import threading
 import queue
 import numpy as np
 
-# relative imports inside the vision_detection package
-from .video_capture import init_camera, get_frame, release_camera
 from .face_detection import FaceMeshDetector
 from .face_alignment import align_and_crop, compute_eye_centers
 from .utils import FPSMeter, EyeSmoother
@@ -48,56 +46,69 @@ def force_stop(vt, cap):
 
 class VisionThread(threading.Thread):
     """
-    Background thread:
-      - Opens camera
-      - Reads frames
-      - Detects a face
-      - Aligns & crops face
-      - Updates self.last_aligned_face
-    It does NOT open any OpenCV window or call cv2.waitKey.
+    Background processing thread:
+    - Receives frames from the main thread
+    - Detects FaceMesh landmarks
+    - Computes bbox + (optionally) aligned/cropped preview face
+
+    IMPORTANT:
+    We do NOT rely on vt.last_aligned_face to guarantee enrollment=identification.
+    In main.py we will call align_and_crop with the SAME params for both cases.
     """
 
-    def __init__(self, fps_estimate: int = 30, camera_index: int = 0, debug: bool = False):
+    def __init__(
+        self,
+        fps_estimate: int = 30,
+        camera_index: int = 0,
+        debug: bool = False,
+        # Optional: consistent crop config for the preview face (can match identification)
+        align_crop_size: int = 224,
+        align_bbox_scale: float = 1.10,
+        align_rotate: bool = True,
+    ):
         super().__init__()
 
-        # camera index (0 = default)
         self.camera_index = camera_index
         self.debug = debug
 
-        # things other modules read
+        # Preview/canonical config (main.py may override it)
+        self.align_crop_size = align_crop_size
+        self.align_bbox_scale = align_bbox_scale
+        self.align_rotate = align_rotate
+
+        # Shared outputs read by other modules
         self.last_aligned_face = None
         self.last_coords = None
         self.last_frame = None
         self.last_bbox = None
 
-        # helpers
         self.running = False
         self.detector = FaceMeshDetector(max_num_faces=1, refine_landmarks=True)
         self.fps_meter = FPSMeter()
         self.eye_smoother = EyeSmoother(window=5)
         self.last_fps = 0
 
-        # NEW: safe queue for frames
-        self.frame_queue = queue.Queue(maxsize=1)  # always only latest frame
+        # Keep only the latest frame (drop older frames)
+        self.frame_queue = queue.Queue(maxsize=1)
 
     def stop(self):
         """Ask the thread to stop."""
         self.running = False
 
     def submit_frame(self, frame):
-        """Main thread calls this to send a frame for processing."""
+        """Main thread sends frames here."""
         if not self.running:
             return
-        # drop old frame if thread is slow
+
         if self.frame_queue.full():
             try:
                 self.frame_queue.get_nowait()
-            except:
+            except Exception:
                 pass
         self.frame_queue.put(frame)
 
     def run(self):
-        """Main loop that runs in background."""
+        """Main loop of the background thread."""
         self.running = True
         print("Camera thread started (processing only).")
 
@@ -110,39 +121,38 @@ class VisionThread(threading.Thread):
             if frame is None:
                 continue
 
-            # ---- PROCESS EXACTLY THE SAME AS BEFORE ----
-
-            # store frame & fill buffer (for Lorenzo)
+            # Store the last frame for other modules (rPPG, main loop, etc.)
             self.last_frame = frame.copy()
 
-            # detect face
+            # Detect landmarks
             coords = self.detector.process(frame)
             self.last_coords = coords
 
             if coords is not None:
-                # bounding box
+                # Compute bbox from landmarks (for GUI corners)
                 min_x = min(p[0] for p in coords)
                 min_y = min(p[1] for p in coords)
                 max_x = max(p[0] for p in coords)
                 max_y = max(p[1] for p in coords)
                 self.last_bbox = (min_x, min_y, max_x, max_y)
 
-                # eyes
+                # Smooth eye centers (optional, kept for stability if you use it later)
                 left_xy, right_xy = compute_eye_centers(coords)
                 self.eye_smoother.update(left_xy, right_xy)
-                sm_left_xy, sm_right_xy = self.eye_smoother.get_smoothed()
+                _ = self.eye_smoother.get_smoothed()
 
-                # align & crop face (this is what YOU need)
+                # Optional: compute a preview aligned face (NOT used for identity consistency)
                 aligned = align_and_crop(
                     frame_bgr=frame,
                     coords=coords,
-                    crop_size=224,
-                    bbox_scale=1.10,
+                    crop_size=self.align_crop_size,
+                    bbox_scale=self.align_bbox_scale,
+                    align=self.align_rotate,
                 )
                 if aligned is not None:
                     self.last_aligned_face = aligned
 
-            # FPS counter (no GUI, just keep it updated)
+            # FPS meter
             self.last_fps = int(self.fps_meter.tick())
 
         print("Camera thread stopped")
